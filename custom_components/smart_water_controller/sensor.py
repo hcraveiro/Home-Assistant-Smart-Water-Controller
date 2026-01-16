@@ -93,9 +93,15 @@ class StateSensor(SmartWaterControllerBaseEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         attrs = {}
-        if self.coordinator.controller.device_name == "Controller Status":
-            attrs["schedule"] = self.coordinator.schedule
+
+        # Only expose schedule/service prefix on the Controller Status entity
+        if self.device_id == self.coordinator.controller.device_id:
+            attrs["schedule"] = self.coordinator.schedule or []
             attrs["num_stations"] = self.coordinator.num_stations
+            attrs["service_prefix"] = self.coordinator.controller_service_prefix
+            # Optional alias for compatibility
+            attrs["controller_service_prefix"] = self.coordinator.controller_service_prefix
+
         return attrs
 
 
