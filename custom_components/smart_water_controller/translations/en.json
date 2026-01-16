@@ -1,0 +1,296 @@
+{
+  "config": {
+    "title": "Smart Water Controller Config Flow",
+    "abort": {
+      "already_configured": "Device is already configured",
+      "reconfigure_successful": "Reconfiguration successful",
+      "already_in_progress": "A setup is already in progress for this integration"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "invalid_settings": "Invalid settings",
+      "invalid_service": "Invalid service format. Use domain.service",
+      "invalid_mac": "Invalid MAC address. Use AA:BB:CC:DD:EE:FF",
+      "mac_required": "A MAC address is required in at least one enabled action parameter of type \"mac address\"",
+      "unknown": "Unexpected error"
+    },
+    "step": {
+      "user": {
+        "title": "Irrigation control",
+        "data": {
+          "name": "Name",
+          "irrigation_control_method": "How is watering controlled?"
+        }
+      },
+      "station_switches": {
+        "title": "Station switches",
+        "description": "Select the switch entity that controls each station. The integration will turn the switch on to water and will turn it off when the duration ends.",
+        "data": {
+          "station_1_switch": "Station 1 switch",
+          "station_2_switch": "Station 2 switch",
+          "station_3_switch": "Station 3 switch",
+          "station_4_switch": "Station 4 switch",
+          "station_5_switch": "Station 5 switch",
+          "station_6_switch": "Station 6 switch",
+          "station_7_switch": "Station 7 switch",
+          "station_8_switch": "Station 8 switch"
+        }
+      },
+      "service_config": {
+        "title": "Service configuration",
+        "description": "Select which actions to enable and which Home Assistant service each action should call.\n\nFormat: domain.service\n\nNote: You must configure at least one parameter of type \"mac address\" with a value in one of the enabled actions.",
+        "data": {
+          "enable_sprinkle_station": "Enable: Sprinkle station",
+          "service_sprinkle_station": "Service for Sprinkle station (domain.service)",
+          "enable_stop_sprinkle": "Enable: Stop sprinkle",
+          "service_stop_sprinkle": "Service for Stop sprinkle (domain.service)",
+          "enable_turn_on": "Enable: Turn on",
+          "service_turn_on": "Service for Turn on (domain.service)",
+          "enable_turn_off": "Enable: Turn off",
+          "service_turn_off": "Service for Turn off (domain.service)"
+        }
+      },
+      "configure_action": {
+        "title": "Service parameters",
+        "description": "{service_description}",
+        "data": {
+          "param_1_name": "Parameter 1 name",
+          "param_1_label": "Parameter 1 label",
+          "param_1_value": "Parameter 1 value",
+          "param_1_type": "Parameter 1 type",
+          "param_2_name": "Parameter 2 name",
+          "param_2_label": "Parameter 2 label",
+          "param_2_value": "Parameter 2 value",
+          "param_2_type": "Parameter 2 type",
+          "param_3_name": "Parameter 3 name",
+          "param_3_label": "Parameter 3 label",
+          "param_3_value": "Parameter 3 value",
+          "param_3_type": "Parameter 3 type",
+          "param_4_name": "Parameter 4 name",
+          "param_4_label": "Parameter 4 label",
+          "param_4_value": "Parameter 4 value",
+          "param_4_type": "Parameter 4 type",
+          "param_5_name": "Parameter 5 name",
+          "param_5_label": "Parameter 5 label",
+          "param_5_value": "Parameter 5 value",
+          "param_5_type": "Parameter 5 type"
+        }
+      },
+      "num_stations": {
+        "title": "Stations",
+        "data": {
+          "num_stations": "Number of stations"
+        }
+      },
+      "lawn_areas": {
+        "title": "Lawn Areas configuration",
+        "description": "Please provide a name and the size in square meters (m²) for each station.",
+        "data": {
+          "station_1_name": "Station 1 Name",
+          "station_1_area": "Station 1 Area (m²)",
+          "station_2_name": "Station 2 Name",
+          "station_2_area": "Station 2 Area (m²)",
+          "station_3_name": "Station 3 Name",
+          "station_3_area": "Station 3 Area (m²)",
+          "station_4_name": "Station 4 Name",
+          "station_4_area": "Station 4 Area (m²)",
+          "station_5_name": "Station 5 Name",
+          "station_5_area": "Station 5 Area (m²)",
+          "station_6_name": "Station 6 Name",
+          "station_6_area": "Station 6 Area (m²)",
+          "station_7_name": "Station 7 Name",
+          "station_7_area": "Station 7 Area (m²)",
+          "station_8_name": "Station 8 Name",
+          "station_8_area": "Station 8 Area (m²)",
+          "station_9_name": "Station 9 Name",
+          "station_9_area": "Station 9 Area (m²)",
+          "station_10_name": "Station 10 Name",
+          "station_10_area": "Station 10 Area (m²)",
+          "station_11_name": "Station 11 Name",
+          "station_11_area": "Station 11 Area (m²)",
+          "station_12_name": "Station 12 Name",
+          "station_12_area": "Station 12 Area (m²)",
+          "station_13_name": "Station 13 Name",
+          "station_13_area": "Station 13 Area (m²)",
+          "station_14_name": "Station 14 Name",
+          "station_14_area": "Station 14 Area (m²)",
+          "station_15_name": "Station 15 Name",
+          "station_15_area": "Station 15 Area (m²)",
+          "station_16_name": "Station 16 Name",
+          "station_16_area": "Station 16 Area (m²)"
+        }
+      },
+      "location": {
+        "title": "Controller location",
+        "data": {
+          "sensors": "Controller location"
+        }
+      },
+      "weather": {
+        "title": "Weather",
+        "data": {
+          "weather_provider": "Weather provider",
+          "weather_api_key": "Weather API Key (optional)",
+          "sprinkle_with_rain": "Sprinkle even when raining"
+        }
+      },
+      "soil_moisture": {
+        "title": "Soil Moisture Sensor",
+        "data": {
+          "use_soil_moisture": "Use a soil moisture sensor?",
+          "soil_moisture_sensor": "Soil Moisture Sensor",
+          "soil_moisture_threshold": "Soil Moisture Threshold (%)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Water Controller Integration Options",
+        "description": "Choose what you want to configure.",
+        "menu_options": {
+          "basic_data": "Basic data",
+          "services": "Services",
+          "station_switches": "Station Switches",
+          "num_stations": "Number of stations",
+          "lawn_areas": "Lawn areas configuration",
+          "weather": "Weather",
+          "soil_moisture": "Soil Moisture Sensor"
+        }
+      },
+      "basic_data": {
+        "title": "Basic data",
+        "description": "Amend your options.",
+        "data": {
+          "scan_interval": "Scan Interval (seconds)",
+          "bluetooth_timeout": "Bluetooth timeout (seconds)",
+          "weather_api_cache_timeout": "Weather API Cache timeout (minutes)"
+        }
+      },
+      "services": {
+        "title": "Services",
+        "description": "Enable/disable actions and set the Home Assistant service for each enabled action.\n\nFormat: domain.service",
+        "data": {
+          "enable_sprinkle_station": "Enable: Sprinkle station",
+          "service_sprinkle_station": "Service for Sprinkle station (domain.service)",
+          "enable_stop_sprinkle": "Enable: Stop sprinkle",
+          "service_stop_sprinkle": "Service for Stop sprinkle (domain.service)",
+          "enable_turn_on": "Enable: Turn on",
+          "service_turn_on": "Service for Turn on (domain.service)",
+          "enable_turn_off": "Enable: Turn off",
+          "service_turn_off": "Service for Turn off (domain.service)"
+        }
+      },
+      "services_configure_action": {
+        "title": "Service parameters",
+        "description": "{service_description}",
+        "data": {
+          "param_1_name": "Parameter 1 name",
+          "param_1_label": "Parameter 1 label",
+          "param_1_value": "Parameter 1 value",
+          "param_1_type": "Parameter 1 type",
+          "param_2_name": "Parameter 2 name",
+          "param_2_label": "Parameter 2 label",
+          "param_2_value": "Parameter 2 value",
+          "param_2_type": "Parameter 2 type",
+          "param_3_name": "Parameter 3 name",
+          "param_3_label": "Parameter 3 label",
+          "param_3_value": "Parameter 3 value",
+          "param_3_type": "Parameter 3 type",
+          "param_4_name": "Parameter 4 name",
+          "param_4_label": "Parameter 4 label",
+          "param_4_value": "Parameter 4 value",
+          "param_4_type": "Parameter 4 type",
+          "param_5_name": "Parameter 5 name",
+          "param_5_label": "Parameter 5 label",
+          "param_5_value": "Parameter 5 value",
+          "param_5_type": "Parameter 5 type"
+        }
+      },
+      "num_stations": {
+          "title": "Stations",
+          "description": "Choose how many stations your controller has. You can edit names and areas in the next step.",
+          "data": {
+            "num_stations": "Number of stations"
+          }
+      },
+      "lawn_areas": {
+        "title": "Lawn Areas configuration",
+        "description": "Please provide a name and the size in square meters (m²) for each station.",
+        "data": {
+          "station_1_name": "Station 1 Name",
+          "station_1_area": "Station 1 Area (m²)",
+          "station_2_name": "Station 2 Name",
+          "station_2_area": "Station 2 Area (m²)",
+          "station_3_name": "Station 3 Name",
+          "station_3_area": "Station 3 Area (m²)",
+          "station_4_name": "Station 4 Name",
+          "station_4_area": "Station 4 Area (m²)",
+          "station_5_name": "Station 5 Name",
+          "station_5_area": "Station 5 Area (m²)",
+          "station_6_name": "Station 6 Name",
+          "station_6_area": "Station 6 Area (m²)",
+          "station_7_name": "Station 7 Name",
+          "station_7_area": "Station 7 Area (m²)",
+          "station_8_name": "Station 8 Name",
+          "station_8_area": "Station 8 Area (m²)",
+          "station_9_name": "Station 9 Name",
+          "station_9_area": "Station 9 Area (m²)",
+          "station_10_name": "Station 10 Name",
+          "station_10_area": "Station 10 Area (m²)",
+          "station_11_name": "Station 11 Name",
+          "station_11_area": "Station 11 Area (m²)",
+          "station_12_name": "Station 12 Name",
+          "station_12_area": "Station 12 Area (m²)",
+          "station_13_name": "Station 13 Name",
+          "station_13_area": "Station 13 Area (m²)",
+          "station_14_name": "Station 14 Name",
+          "station_14_area": "Station 14 Area (m²)",
+          "station_15_name": "Station 15 Name",
+          "station_15_area": "Station 15 Area (m²)",
+          "station_16_name": "Station 16 Name",
+          "station_16_area": "Station 16 Area (m²)"
+        }
+      },
+      "weather": {
+        "title": "Weather",
+        "data": {
+          "weather_provider": "Weather provider",
+          "weather_api_key": "Weather API Key (optional)",
+          "sprinkle_with_rain": "Sprinkle even when raining"
+        }
+      },
+      "soil_moisture": {
+        "title": "Soil Moisture Sensor",
+        "data": {
+          "use_soil_moisture": "Use a soil moisture sensor?",
+          "soil_moisture_sensor": "Soil Moisture Sensor",
+          "soil_moisture_threshold": "Soil Moisture Threshold (%)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "true_false_selector": {
+      "options": {
+        "true": "True",
+        "false": "False"
+      }
+    },
+    "irrigation_control_method": {
+      "options": {
+        "service": "Service",
+        "solem_toolkit": "Solem (BL2IP - Solem Toolkit service)"
+      }
+    },
+    "weather_provider": {
+      "options": {
+        "none": "Disabled",
+        "openweathermap": "OpenWeatherMap",
+        "pirateweather": "PirateWeather"
+      }
+    }
+  }
+}

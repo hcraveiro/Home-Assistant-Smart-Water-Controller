@@ -1,0 +1,7 @@
+set_irrigation_schedule:
+  description: "Defines the schedule for watering"
+  fields:
+    schedule:
+      description: "JSON with the schedule structure"
+      required: true
+      example: "{'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': ['07:00:00'], 'interval_days': 4, 'stations': {'station_1_minutes': 10, 'station_2_minutes': 5}}, {'hours': ['07:00:00'], 'interval_days': 4, 'stations': {'station_1_minutes': 10, 'station_2_minutes': 5}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}, {'hours': [], 'interval_days': 1, 'stations': {'station_1_minutes': 0, 'station_2_minutes': 0}}"
