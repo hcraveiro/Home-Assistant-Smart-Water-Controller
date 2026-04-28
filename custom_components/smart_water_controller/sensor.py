@@ -1,14 +1,4 @@
-"""Sensor setup for our Integration.
-
-Here we use a different method to define some of our entity classes.
-As, in our example, so much is common, we use our base entity class to define
-many properties, then our base sensor class to define the property to get the
-value of the sensor.
-
-As such, for all our other sensor types, we can just set the _attr_ value to
-keep our code small and easily readable.  You can do this for all entity properties(attributes)
-if you so wish, or mix and match to suit.
-"""
+"""Sensor setup for our integration."""
 
 from dataclasses import dataclass
 import logging
@@ -47,7 +37,7 @@ async def async_setup_entry(
     config_entry: MyConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ):
-    """Set up the Sensors."""
+    """Set up the sensors."""
     coordinator: SmartWaterControllerCoordinator = config_entry.runtime_data.coordinator
 
     use_weather = coordinator.weather_api is not None
@@ -59,8 +49,9 @@ async def async_setup_entry(
         SensorTypeClass("TOTAL_WATER_CONSUMPTION_SENSOR", "state", TotalWaterConsumptionSensor),
         SensorTypeClass("SPRINKLE_TOTAL_AMOUNT_SENSOR", "state", SprinkleTotalAmountSensor),
         SensorTypeClass("FORECASTED_SPRINKLE_TODAY_SENSOR", "state", ForecastedSprinkleTodaySensor),
+        SensorTypeClass("REMAINING_SPRINKLE_TODAY_SENSOR", "state", RemainingSprinkleTodaySensor),
     ]
-    
+
     if use_weather:
         sensor_types.extend(
             [
@@ -86,30 +77,35 @@ async def async_setup_entry(
 
 
 class StateSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Generic state sensor."""
+
     @property
-    def native_value(self) -> int | float | str:
+    def native_value(self) -> int | float | str | None:
+        """Return the sensor value."""
         return self.coordinator.get_device_parameter(self.device_id, self.parameter)
 
     @property
     def extra_state_attributes(self):
+        """Return extra attributes."""
         attrs = {}
 
-        # Only expose schedule/service prefix on the Controller Status entity
         if self.device_id == self.coordinator.controller.device_id:
             attrs["schedule"] = self.coordinator.schedule or []
             attrs["num_stations"] = self.coordinator.num_stations
             attrs["service_prefix"] = self.coordinator.controller_service_prefix
-            # Optional alias for compatibility
             attrs["controller_service_prefix"] = self.coordinator.controller_service_prefix
 
         return attrs
 
 
 class NextScheduleSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for the next scheduled watering time."""
+
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @property
     def native_value(self) -> datetime | None:
+        """Return the next scheduled watering time."""
         next_schedule = self.coordinator.next_schedule
 
         if next_schedule:
@@ -121,17 +117,20 @@ class NextScheduleSensor(SmartWaterControllerBaseEntity, SensorEntity):
                     next_schedule = dt_util.as_local(next_schedule)
 
                 return next_schedule
-            except Exception as e:
-                _LOGGER.warning(f"Invalid format for schedule: {next_schedule} - {e}")
+            except Exception as ex:  # pylint: disable=broad-except
+                _LOGGER.warning("Invalid format for schedule: %s - %s", next_schedule, ex)
 
         return None
 
 
 class LastSprinkleSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for the last sprinkle time."""
+
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @property
     def native_value(self) -> datetime | None:
+        """Return the last sprinkle time."""
         last_sprinkle = self.coordinator.last_sprinkle
 
         if last_sprinkle:
@@ -143,17 +142,20 @@ class LastSprinkleSensor(SmartWaterControllerBaseEntity, SensorEntity):
                     last_sprinkle = dt_util.as_local(last_sprinkle)
 
                 return last_sprinkle
-            except Exception as e:
-                _LOGGER.warning(f"Invalid format for last_sprinkle: {last_sprinkle} - {e}")
+            except Exception as ex:  # pylint: disable=broad-except
+                _LOGGER.warning("Invalid format for last_sprinkle: %s - %s", last_sprinkle, ex)
 
         return None
 
 
 class LastRainSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for the last rain time."""
+
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @property
     def native_value(self) -> datetime | None:
+        """Return the last rain time."""
         last_rain = self.coordinator.last_rain
 
         if last_rain:
@@ -165,72 +167,92 @@ class LastRainSensor(SmartWaterControllerBaseEntity, SensorEntity):
                     last_rain = dt_util.as_local(last_rain)
 
                 return last_rain
-            except Exception as e:
-                _LOGGER.warning(f"Invalid format for last_rain: {last_rain} - {e}")
+            except Exception as ex:  # pylint: disable=broad-except
+                _LOGGER.warning("Invalid format for last_rain: %s - %s", last_rain, ex)
 
         return None
 
 
 class TotalRainTimeSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for total rain time today."""
+
     _attr_state_class = SensorStateClass.TOTAL
     _attr_device_class = SensorDeviceClass.DURATION
 
     @property
     def native_unit_of_measurement(self) -> str:
+        """Return the unit of measurement."""
         return "min"
 
     @property
-    def native_value(self) -> int:
-        return self.coordinator.rain_time_today
+    def native_value(self) -> float:
+        """Return total rain time today."""
+        return round(self.coordinator.rain_time_today, 2)
 
 
 class TotalAmountRainSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for total rain amount today."""
+
     _attr_state_class = SensorStateClass.TOTAL
     _attr_device_class = SensorDeviceClass.PRECIPITATION
 
     @property
     def native_unit_of_measurement(self) -> str:
+        """Return the unit of measurement."""
         return UnitOfPrecipitationDepth.MILLIMETERS
 
     @property
-    def native_value(self) -> int:
+    def native_value(self) -> float:
+        """Return total rain amount today."""
         return round(self.coordinator.rain_total_amount_today, 2)
 
 
 class TotalForecastedRainSensor(SmartWaterControllerBaseEntity, SensorEntity):
-    _attr_state_class = SensorStateClass.TOTAL
+    """Sensor for total expected rain today."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_device_class = SensorDeviceClass.PRECIPITATION
 
     @property
     def native_unit_of_measurement(self) -> str:
+        """Return the unit of measurement."""
         return UnitOfPrecipitationDepth.MILLIMETERS
 
     @property
-    def native_value(self) -> int:
+    def native_value(self) -> float:
+        """Return total expected rain today."""
         return round(self.coordinator.rain_total_amount_forecasted_today, 2)
 
 
 class TotalWaterConsumptionSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for total water consumption."""
+
     _attr_state_class = SensorStateClass.TOTAL
     _attr_device_class = SensorDeviceClass.WATER
     _attr_native_unit_of_measurement = "L"
 
     @property
     def native_value(self) -> float:
+        """Return total water consumption."""
         return round(self.coordinator.total_water_consumption, 2)
 
 
 class SprinkleTotalAmountSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for the amount already sprinkled today."""
+
     _attr_state_class = SensorStateClass.TOTAL
     _attr_device_class = SensorDeviceClass.PRECIPITATION
     _attr_native_unit_of_measurement = UnitOfPrecipitationDepth.MILLIMETERS
 
     @property
     def native_value(self) -> float:
-        return self.coordinator.get_device_parameter(self.device_id, self.parameter)
+        """Return the amount already sprinkled today."""
+        value = self.coordinator.get_device_parameter(self.device_id, self.parameter)
+        return round(float(value or 0), 2)
+
 
 class ForecastedSprinkleTodaySensor(SmartWaterControllerBaseEntity, SensorEntity):
-    """Sensor que mostra os mm totais previstos de rega para hoje por estação."""
+    """Sensor for the total planned sprinkle amount today."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_device_class = SensorDeviceClass.PRECIPITATION
@@ -238,5 +260,20 @@ class ForecastedSprinkleTodaySensor(SmartWaterControllerBaseEntity, SensorEntity
 
     @property
     def native_value(self) -> float:
-        """Retorna o valor previsto de rega para hoje para esta estação (mm)."""
-        return self.coordinator.get_device_parameter(self.device_id, self.parameter)
+        """Return the total planned sprinkle amount today."""
+        value = self.coordinator.get_device_parameter(self.device_id, self.parameter)
+        return round(float(value or 0), 2)
+
+
+class RemainingSprinkleTodaySensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for the remaining sprinkle amount needed today."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_device_class = SensorDeviceClass.PRECIPITATION
+    _attr_native_unit_of_measurement = UnitOfPrecipitationDepth.MILLIMETERS
+
+    @property
+    def native_value(self) -> float:
+        """Return the remaining sprinkle amount needed today."""
+        value = self.coordinator.get_device_parameter(self.device_id, self.parameter)
+        return round(float(value or 0), 2)
