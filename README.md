@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/hcraveiro/Home-Assistant-Smart-Water-Controller.svg)](https://github.com/hcraveiro/Home-Assistant-Smart-Water-Controller/releases/)
 
-Integrate irrigation controllers into Home Assistant with support for manual watering, scheduled watering, station-level planning, rain-aware watering and optional soil moisture protection.
+Integrate irrigation controllers into Home Assistant with support for manual watering, scheduled watering, station-level planning, rain-aware watering, current irrigation tracking and optional soil moisture protection.
 
 This integration was originally created for **Solem Bluetooth Watering Controllers** and has been tested with **Solem BL-IP**, but it can also control other irrigation systems, such as **Rain Bird**, when each station is exposed as a Home Assistant switch.
 
@@ -34,6 +34,7 @@ When configured with a weather provider, the integration can reduce or skip wate
   - [Soil Moisture Protection](#soil-moisture-protection)
   - [Sensors](#sensors)
     - [Controller and Station Sensors](#controller-and-station-sensors)
+    - [Current Irrigation Sensors](#current-irrigation-sensors)
     - [Rain and Forecast Sensors](#rain-and-forecast-sensors)
     - [Irrigation Planning Sensors](#irrigation-planning-sensors)
     - [Water Usage Sensors](#water-usage-sensors)
@@ -43,6 +44,7 @@ When configured with a weather provider, the integration can reduce or skip wate
   - [Slot-Based Watering Logic](#slot-based-watering-logic)
   - [Schedule Changes During the Day](#schedule-changes-during-the-day)
   - [Switch State Tracking](#switch-state-tracking)
+  - [Active Irrigation Tracking and Restart Safety](#active-irrigation-tracking-and-restart-safety)
   - [FAQ](#faq)
 
 ---
@@ -60,6 +62,10 @@ When configured with a weather provider, the integration can reduce or skip wate
 - Optional soil moisture sensor protection.
 - Switch-based control for systems where each station is exposed as a Home Assistant switch.
 - Automatic station status tracking from switch states.
+- Current irrigation station tracking.
+- Current irrigation end time tracking.
+- Controller and station attributes for active irrigation metadata.
+- Restart safety for active switch-based irrigation.
 - Persistent daily irrigation and rain counters.
 - Automatic daily reset.
 - HACS-compatible installation.
@@ -306,6 +312,12 @@ This integration exposes several sensors per controller/config entry.
   - Number of stations.
   - Service prefix.
   - Controller service prefix.
+  - Irrigation source.
+  - Current station.
+  - Current station name.
+  - Current irrigation duration.
+  - Current irrigation start time.
+  - Current irrigation end time.
 
 - **Station status**
 
@@ -316,7 +328,46 @@ This integration exposes several sensors per controller/config entry.
   - `Stopped`
   - `Sprinkling`
 
+  Each station status entity also exposes irrigation attributes:
+
+  - `irrigation_source`
+  - `duration_minutes`
+  - `started_at`
+  - `end_at`
+
 When using switch-based control, station status is synchronized from the configured station switches.
+
+---
+
+### Current Irrigation Sensors
+
+The integration exposes current irrigation sensors to make the active watering state easier to display in Lovelace.
+
+- **Current Irrigation Station**
+
+  Shows the station currently being watered.
+
+  When no station is watering, this sensor shows:
+
+  ```text
+  Idle
+  ```
+
+- **Irrigation End Time**
+
+  Timestamp of the expected end time for the current irrigation.
+
+  This is especially useful in Home Assistant entity cards because timestamp sensors are displayed relatively by the frontend, for example:
+
+  ```text
+  in 7 minutes
+  ```
+
+  When no irrigation is active, this sensor is empty.
+
+For irrigation started by the integration, the end time is known and persisted for restart safety.
+
+For irrigation started externally by manually turning on a station switch, the integration can detect that the station is sprinkling, but it may not know the duration or end time.
 
 ---
 
@@ -620,6 +671,38 @@ If the external irrigation controller automatically turns off a station after it
 
 ---
 
+## Active Irrigation Tracking and Restart Safety
+
+When irrigation is started by the integration, the active irrigation metadata is persisted.
+
+This includes:
+
+- Station.
+- Source.
+- Start time.
+- End time.
+- Duration in minutes.
+
+This allows the integration to restore the current irrigation state after a Home Assistant restart.
+
+If Home Assistant restarts while irrigation is active and the configured end time has not passed yet, the integration restores:
+
+```text
+Current Irrigation Station
+Irrigation End Time
+Station status = Sprinkling
+```
+
+It also schedules a new automatic stop based on the remaining time.
+
+If Home Assistant restarts after the expected end time has already passed, the integration clears the active irrigation state and attempts to turn off the station switch.
+
+For switch-based control, this helps prevent a station from being left watering indefinitely after a Home Assistant restart.
+
+If a station switch is turned on externally, outside the integration, the integration detects the station as `Sprinkling`, but it may not know the irrigation duration or end time.
+
+---
+
 ## FAQ
 
 ### Can I use this integration with Rain Bird?
@@ -684,6 +767,32 @@ Remaining Sprinkle Today = irrigation still needed today
 ```
 
 Because the entity ID is preserved by Home Assistant, the historical graph may show old values with the previous meaning.
+
+### How do I see how much time is left for the current irrigation?
+
+Use the **Irrigation End Time** sensor.
+
+Because this is a timestamp sensor, Home Assistant cards can display it relatively, for example:
+
+```text
+in 7 minutes
+```
+
+### What happens if Home Assistant restarts during irrigation?
+
+If the irrigation was started by the integration, the active irrigation metadata is restored from storage.
+
+If the expected end time has not passed, the integration restores the active irrigation state and schedules a new automatic stop.
+
+If the expected end time has passed, the integration clears the active irrigation state and attempts to stop the station.
+
+### Can the integration know the end time if I manually turn on the station switch?
+
+Not always.
+
+If the switch is turned on outside the integration, the integration can detect that the station is sprinkling, but it may not know the intended duration or end time.
+
+In that case, the station status is updated, but **Irrigation End Time** may remain empty.
 
 ### Can I configure multiple watering times per day?
 
