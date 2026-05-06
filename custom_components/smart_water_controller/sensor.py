@@ -46,6 +46,8 @@ async def async_setup_entry(
         SensorTypeClass("STATE_SENSOR", "state", StateSensor),
         SensorTypeClass("NEXT_SCHEDULE_SENSOR", "state", NextScheduleSensor),
         SensorTypeClass("LAST_SPRINKLE_SENSOR", "state", LastSprinkleSensor),
+        SensorTypeClass("CURRENT_IRRIGATION_STATION_SENSOR", "state", CurrentIrrigationStationSensor),
+        SensorTypeClass("IRRIGATION_END_TIME_SENSOR", "state", IrrigationEndTimeSensor),
         SensorTypeClass("TOTAL_WATER_CONSUMPTION_SENSOR", "state", TotalWaterConsumptionSensor),
         SensorTypeClass("SPRINKLE_TOTAL_AMOUNT_SENSOR", "state", SprinkleTotalAmountSensor),
         SensorTypeClass("FORECASTED_SPRINKLE_TODAY_SENSOR", "state", ForecastedSprinkleTodaySensor),
@@ -94,6 +96,23 @@ class StateSensor(SmartWaterControllerBaseEntity, SensorEntity):
             attrs["num_stations"] = self.coordinator.num_stations
             attrs["service_prefix"] = self.coordinator.controller_service_prefix
             attrs["controller_service_prefix"] = self.coordinator.controller_service_prefix
+            attrs.update(self.coordinator.get_controller_irrigation_attributes())
+            return attrs
+
+        station_number = self.coordinator.get_device_parameter(
+            self.device_id,
+            "station_number",
+        )
+
+        if station_number is not None:
+            try:
+                attrs.update(
+                    self.coordinator.get_station_irrigation_attributes(
+                        int(station_number)
+                    )
+                )
+            except (TypeError, ValueError):
+                pass
 
         return attrs
 
@@ -147,6 +166,29 @@ class LastSprinkleSensor(SmartWaterControllerBaseEntity, SensorEntity):
 
         return None
 
+class CurrentIrrigationStationSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for the current irrigation station."""
+
+    @property
+    def native_value(self) -> str:
+        """Return the current irrigation station name."""
+        return self.coordinator.get_current_irrigation_station_name()
+
+
+class IrrigationEndTimeSensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Sensor for the current irrigation end time."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the current irrigation end time."""
+        end_time = self.coordinator.get_current_irrigation_end_time()
+
+        if end_time and end_time.tzinfo is None:
+            return dt_util.as_local(end_time)
+
+        return end_time
 
 class LastRainSensor(SmartWaterControllerBaseEntity, SensorEntity):
     """Sensor for the last rain time."""

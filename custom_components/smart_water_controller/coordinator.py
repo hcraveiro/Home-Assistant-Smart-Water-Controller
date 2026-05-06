@@ -208,6 +208,9 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
 
         # Persisted active irrigation (used for switch method restart safety)
         self.active_irrigation: dict[str, Any] | None = None
+        
+        # Current irrigation metadata used by sensors and attributes.
+        self.current_irrigation: dict[str, Any] | None = None
 
         # self.weather_api is configured inside _configure_weather()
 
@@ -590,24 +593,29 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         """
         if not self._is_switch_control_method():
             self.active_irrigation = None
+            self.current_irrigation = None
             return
     
         if not isinstance(self.active_irrigation, dict):
             self.active_irrigation = None
+            self.current_irrigation = None
             return
     
         station = self.active_irrigation.get("station")
         end_at_str = self.active_irrigation.get("end_at")
         if not station or not end_at_str:
             self.active_irrigation = None
+            self.current_irrigation = None
             return
     
         try:
+            station_id = int(station)
             end_at = datetime.fromisoformat(end_at_str)
             end_at = ensure_aware(end_at)
         except Exception:  # pylint: disable=broad-except
             _LOGGER.warning("%s - Invalid active irrigation end_at: %s", self.controller_mac_address, end_at_str)
             self.active_irrigation = None
+            self.current_irrigation = None
             return
     
         now = dt_util.now()
@@ -618,17 +626,19 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                 station,
             )
             try:
-                await self.api.turn_off_station_switch(int(station))
+                await self.api.turn_off_station_switch(station_id)
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.warning("%s - Failed turning off stale station switch", self.controller_mac_address, exc_info=True)
     
             self.active_irrigation = None
+            self.current_irrigation = None
             await self.save_persistent_data()
             return
     
         remaining_seconds = int((end_at - now).total_seconds())
         if remaining_seconds <= 0:
             self.active_irrigation = None
+            self.current_irrigation = None
             await self.save_persistent_data()
             return
     
@@ -639,14 +649,26 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             remaining_seconds,
         )
     
-        # Reflect state in entities (best-effort). The actual switch might already be ON.
+        source = self.active_irrigation.get("source", "automatic")
+        duration_minutes = self.active_irrigation.get("duration_minutes")
+        start_at = self._parse_irrigation_datetime(self.active_irrigation.get("start_at"))
+    
+        self._set_current_irrigation(
+            station=station_id,
+            source=source,
+            duration_minutes=duration_minutes,
+            start_at=start_at,
+            end_at=end_at,
+        )
+    
         try:
-            self.stations[int(station) - 1].state = "Sprinkling"
+            self.stations[station_id - 1].state = "Sprinkling"
         except Exception:  # pylint: disable=broad-except
             pass
     
-        # Schedule an automatic stop at the expected end time.
-        self.hass.create_task(self._async_stop_irrigation_after_delay(int(station), remaining_seconds))
+        self.hass.async_create_task(
+            self._async_stop_irrigation_after_delay(station_id, remaining_seconds)
+        )
 
     async def _async_stop_irrigation_after_delay(self, station: int, delay_seconds: int) -> None:
         """Stop irrigation after a delay (used to protect switch method on restart)."""
@@ -658,6 +680,169 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("%s - Error while scheduling irrigation auto-stop", self.controller_mac_address)
 
+    def _get_station_name(self, station_id: int | None) -> str | None:
+        """Return the configured station name."""
+        if station_id is None:
+            return None
+    
+        index = station_id - 1
+    
+        if (
+            isinstance(getattr(self, "station_names", None), list)
+            and 0 <= index < len(self.station_names)
+        ):
+            return self.station_names[index]
+    
+        return f"Station {station_id}"
+
+
+    def _parse_irrigation_datetime(self, value: Any) -> datetime | None:
+        """Parse an irrigation datetime value."""
+        if not value:
+            return None
+    
+        if isinstance(value, datetime):
+            return ensure_aware(value)
+    
+        if isinstance(value, str):
+            try:
+                return ensure_aware(datetime.fromisoformat(value))
+            except ValueError:
+                _LOGGER.warning(
+                    f"{self.controller_mac_address} - Invalid irrigation datetime value: {value}"
+                )
+                return None
+    
+        return None
+    
+    
+    def _get_current_irrigation_station_id(self) -> int | None:
+        """Return the current irrigation station id."""
+        if not isinstance(self.current_irrigation, dict):
+            return None
+    
+        try:
+            return int(self.current_irrigation.get("station"))
+        except (TypeError, ValueError):
+            return None
+    
+    
+    def get_current_irrigation_station_name(self) -> str:
+        """Return the current irrigation station name."""
+        station_id = self._get_current_irrigation_station_id()
+    
+        if station_id is None:
+            return "Idle"
+    
+        return self._get_station_name(station_id) or f"Station {station_id}"
+    
+    
+    def get_current_irrigation_end_time(self) -> datetime | None:
+        """Return the current irrigation end time."""
+        if not isinstance(self.current_irrigation, dict):
+            return None
+    
+        return self._parse_irrigation_datetime(self.current_irrigation.get("end_at"))
+    
+    
+    def get_current_irrigation_started_at(self) -> datetime | None:
+        """Return the current irrigation start time."""
+        if not isinstance(self.current_irrigation, dict):
+            return None
+    
+        return self._parse_irrigation_datetime(self.current_irrigation.get("start_at"))
+    
+    
+
+    def _set_current_irrigation(
+        self,
+        *,
+        station: int,
+        source: str,
+        duration_minutes: int | None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> None:
+        """Set current irrigation metadata."""
+        start_at = ensure_aware(start_at or dt_util.now())
+    
+        if end_at is None and duration_minutes is not None:
+            end_at = start_at + timedelta(minutes=duration_minutes)
+    
+        self.current_irrigation = {
+            "station": int(station),
+            "station_name": self._get_station_name(int(station)),
+            "source": source,
+            "duration_minutes": int(duration_minutes) if duration_minutes is not None else None,
+            "start_at": start_at.isoformat(),
+            "end_at": ensure_aware(end_at).isoformat() if end_at is not None else None,
+        }
+    
+    
+    def _clear_current_irrigation(self, station: int | None = None) -> None:
+        """Clear current irrigation metadata."""
+        if station is not None:
+            current_station = self._get_current_irrigation_station_id()
+    
+            if current_station is not None and current_station != int(station):
+                return
+    
+        self.current_irrigation = None
+    
+    
+    def get_controller_irrigation_attributes(self) -> dict[str, Any]:
+        """Return current irrigation attributes for the controller status sensor."""
+        if not isinstance(self.current_irrigation, dict):
+            return {
+                "irrigation_source": None,
+                "current_station": None,
+                "current_station_name": None,
+                "current_duration_minutes": None,
+                "current_started_at": None,
+                "current_end_at": None,
+            }
+    
+        station_id = self._get_current_irrigation_station_id()
+        started_at = self.get_current_irrigation_started_at()
+        end_at = self.get_current_irrigation_end_time()
+    
+        return {
+            "irrigation_source": self.current_irrigation.get("source"),
+            "current_station": station_id,
+            "current_station_name": self.current_irrigation.get("station_name")
+            or self._get_station_name(station_id),
+            "current_duration_minutes": self.current_irrigation.get("duration_minutes"),
+            "current_started_at": started_at.isoformat() if started_at else None,
+            "current_end_at": end_at.isoformat() if end_at else None,
+        }
+    
+    
+    def get_station_irrigation_attributes(self, station_id: int) -> dict[str, Any]:
+        """Return current irrigation attributes for a station status sensor."""
+        current_station = self._get_current_irrigation_station_id()
+    
+        if current_station != int(station_id):
+            return {
+                "irrigation_source": None,
+                "duration_minutes": None,
+                "started_at": None,
+                "end_at": None,
+            }
+    
+        started_at = self.get_current_irrigation_started_at()
+        end_at = self.get_current_irrigation_end_time()
+    
+        return {
+            "irrigation_source": self.current_irrigation.get("source")
+            if isinstance(self.current_irrigation, dict)
+            else None,
+            "duration_minutes": self.current_irrigation.get("duration_minutes")
+            if isinstance(self.current_irrigation, dict)
+            else None,
+            "started_at": started_at.isoformat() if started_at else None,
+            "end_at": end_at.isoformat() if end_at else None,
+        }
+        
     def _clear_station_switch_callbacks(self) -> None:
         """Cancel all currently registered station switch callbacks."""
         for unsubscribe in list(getattr(self, "_station_switch_unsubscribers", [])):
@@ -773,8 +958,22 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     
             if state.state == STATE_ON:
                 new_station_state = "Sprinkling"
+    
+                if self._get_current_irrigation_station_id() is None:
+                    self._set_current_irrigation(
+                        station=station_id,
+                        source="external",
+                        duration_minutes=None,
+                        start_at=dt_util.now(),
+                        end_at=None,
+                    )
+    
             elif state.state == STATE_OFF:
                 new_station_state = "Stopped"
+    
+                if self._get_current_irrigation_station_id() == station_id:
+                    self._clear_current_irrigation(station_id)
+    
             else:
                 _LOGGER.debug(
                     f"{self.controller_mac_address} - Station {station_id} switch has unsupported state: "
@@ -809,6 +1008,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                         "Clearing persisted active irrigation."
                     )
                     self.active_irrigation = None
+                    self._clear_current_irrigation(active_station_id)
                     await self.save_persistent_data()
     
         if changed:
@@ -1328,7 +1528,11 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                     f"mm/min={mm_per_minute:.2f})"
                 )
     
-                await self.start_irrigation(station_id, minutes_needed)
+                await self.start_irrigation(
+                    station_id,
+                    minutes_needed,
+                    source="automatic",
+                )
 
     async def async_update_all_sensors(self):
         _LOGGER.debug(f"{self.controller_mac_address} - Updating all sensors...")
@@ -1438,6 +1642,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                     "state": self.stations[station_id - 1].state,
                     "icon": self.stations[station_id - 1].icon,
                     "last_reboot": self.stations[station_id - 1].last_reboot,
+                    "station_number": station_id,
                 }
             )
     
@@ -1688,6 +1893,34 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                 "last_reboot": None,
             }
         )
+        
+        current_station_device_id = f"{self.controller_mac_address}_current_irrigation_station"
+        data.append(
+            {
+                "device_id": current_station_device_id,
+                "device_type": "CURRENT_IRRIGATION_STATION_SENSOR",
+                "device_name": "Current Irrigation Station",
+                "device_uid": _stable_uid(current_station_device_id),
+                "software_version": "1.0",
+                "state": self.get_current_irrigation_station_name(),
+                "icon": "mdi:sprinkler-variant",
+                "last_reboot": None,
+            }
+        )
+        
+        irrigation_end_time_device_id = f"{self.controller_mac_address}_irrigation_end_time"
+        data.append(
+            {
+                "device_id": irrigation_end_time_device_id,
+                "device_type": "IRRIGATION_END_TIME_SENSOR",
+                "device_name": "Irrigation End Time",
+                "device_uid": _stable_uid(irrigation_end_time_device_id),
+                "software_version": "1.0",
+                "state": self.get_current_irrigation_end_time(),
+                "icon": "mdi:clock-end",
+                "last_reboot": None,
+            }
+        )
     
         # Rain-related devices are only created when Weather is enabled
         if self.weather_api:
@@ -1819,26 +2052,40 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         remaining_mm = max(0.0, target_mm - (applied_mm + expected_rain_mm))
         return round(remaining_mm, 2)
 
-    async def start_irrigation(self, station: int, minutes: int | None = None):
+    async def start_irrigation(
+        self,
+        station: int,
+        minutes: int | None = None,
+        *,
+        source: str = "manual",
+    ):
         """Start irrigation on a station."""
         duration = int(minutes if minutes is not None else self.irrigation_manual_duration)
+        now = dt_util.now()
+        end_at = now + timedelta(minutes=duration)
     
         _LOGGER.info(
             f"{self.controller_mac_address} - Going to start watering on station {station} "
-            f"for {duration} minutes..."
+            f"for {duration} minutes. Source={source}"
         )
     
         self.irrigation_stop_event.clear()
+    
+        self._set_current_irrigation(
+            station=station,
+            source=source,
+            duration_minutes=duration,
+            start_at=now,
+            end_at=end_at,
+        )
     
         try:
             if self._is_switch_control_method():
                 await self.api.turn_on_station_switch(station)
     
-                now = dt_util.now()
-                end_at = now + timedelta(minutes=duration)
-    
                 self.active_irrigation = {
                     "station": int(station),
+                    "source": source,
                     "start_at": now.isoformat(),
                     "end_at": end_at.isoformat(),
                     "duration_minutes": int(duration),
@@ -1846,15 +2093,10 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     
                 await self.save_persistent_data()
     
-                # Reflect the intended state immediately.
                 self.stations[station - 1].state = "Sprinkling"
     
-                # Best-effort sync with the real switch state.
-                # If the RainBird switch entity has already updated, this confirms the state.
-                # If it has not updated yet, the state-change listener will correct it later.
                 await self._async_sync_station_states_from_switches()
     
-                # Extra safety: schedule a stop in case the watering loop is interrupted.
                 self.hass.async_create_task(
                     self._async_stop_irrigation_after_delay(
                         int(station),
@@ -1867,6 +2109,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     
         except APIConnectionError:
             _LOGGER.error(f"{self.controller_mac_address} - Failed due to connection error.")
+            self._clear_current_irrigation(station)
             return
     
         data = await self.async_update_all_sensors()
@@ -1910,9 +2153,6 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             self.active_irrigation = None
             await self.save_persistent_data()
     
-            # Best-effort sync after turning the switch off.
-            # If the switch state has already changed to off, the station becomes Stopped.
-            # If not, the listener will update it when the switch entity changes.
             await self._async_sync_station_states_from_switches()
     
             switch_entity_id = self._get_station_switch_entity_id(station)
@@ -1920,9 +2160,11 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     
             if switch_state is None or switch_state.state != STATE_ON:
                 self.stations[station - 1].state = "Stopped"
+                self._clear_current_irrigation(station)
     
         else:
             self.stations[station - 1].state = "Stopped"
+            self._clear_current_irrigation(station)
     
         self.last_sprinkle = dt_util.now()
     
@@ -1937,29 +2179,39 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
 
 
     async def stop_irrigation(self):
+        """Stop irrigation."""
         _LOGGER.info(f"{self.controller_mac_address} - Stopping watering...")
+    
         try:
             if self._is_switch_control_method():
                 await self.api.turn_off_all_station_switches()
             else:
                 await self.api.stop_sprinkle()
-        except APIConnectionError as ex:
+        except APIConnectionError:
             _LOGGER.error(f"{self.controller_mac_address} - Failed due to connection error.")
             return
     
-        # Trigger event to stop sprinkling task
         self.irrigation_stop_event.set()
     
         if self._is_switch_control_method():
             self.active_irrigation = None
             await self.save_persistent_data()
     
+        self._clear_current_irrigation()
+    
         for station_id in range(1, self.num_stations + 1):
             self.stations[station_id - 1].state = "Stopped"
     
         _LOGGER.info(f"{self.controller_mac_address} - Stopped watering.")
+    
         data = await self.async_update_all_sensors()
-        self.async_set_updated_data(data)
+    
+        if data is not None:
+            self.async_set_updated_data(data)
+        else:
+            _LOGGER.warning(
+                f"{self.controller_mac_address} - async_update_all_sensors() returned None after stopping watering."
+            )
 
     
     async def turn_controller_on(self):
