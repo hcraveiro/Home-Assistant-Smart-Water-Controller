@@ -1,137 +1,238 @@
-"""Irrigation runner helpers for Smart Water Controller."""
+"""Serialized irrigation sessions and persistent, confirmed switch shutdown."""
 
 from __future__ import annotations
 
-from datetime import timedelta
 import asyncio
-from asyncio import sleep
+from contextlib import suppress
+from dataclasses import dataclass, field
+from datetime import timedelta
 import logging
 from typing import TYPE_CHECKING
 
-from homeassistant.const import STATE_ON
+from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.util import dt as dt_util
 
+from ..errors import APIConnectionError
 from ..helpers import planning
 from .active_irrigation import ActiveIrrigationState
-from ..api.controller import APIConnectionError
 
 if TYPE_CHECKING:
     from ..coordinator import SmartWaterControllerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+CONFIRM_TIMEOUT = 10.0
+RETRY_INTERVAL = 5.0
+SAMPLE_INTERVAL = 1.0
+
+
+@dataclass(eq=False)
+class _Session:
+    """One operation owns its cancellation, deadline and cleanup."""
+
+    irrigation: ActiveIrrigationState
+    deadline: float
+    last_sample: float
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
+    interrupted: bool = False
 
 
 class IrrigationRunner:
-    """Execute irrigation operations for the coordinator."""
+    """Own all hardware transitions; obsolete workers never send commands."""
 
     def __init__(self, coordinator: SmartWaterControllerCoordinator) -> None:
-        """Initialize irrigation runner."""
         self.coordinator = coordinator
         self.hass = coordinator.hass
+        self._lock = asyncio.Lock()
+        self._session: _Session | None = None
+        self._generation = 0
+        self._cycle_running = False
+        self._retry_task: asyncio.Task | None = None
+        self._workers: set[asyncio.Task] = set()
+        self._closing = False
+        self._starting_station: int | None = None
+        self._start_interrupted = False
+        self._unavailable_logged: set[int] = set()
+
+    def _switch_state(self, station: int) -> str | None:
+        entity_id = self.coordinator.station_switch_tracker.get_station_switch_entity_id(station)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        return state.state if state else None
+
+    def _all_stations(self) -> list[int]:
+        return list(range(1, self.coordinator.num_stations + 1))
+
+    async def _publish(self) -> None:
+        if self.coordinator._is_switch_control_method():
+            for station in self._all_stations():
+                state = self._switch_state(station)
+                if state not in (STATE_ON, STATE_OFF):
+                    status = "Unavailable"
+                elif station in self.coordinator.pending_stop_stations:
+                    status = "Stopping"
+                else:
+                    status = "Sprinkling" if state == STATE_ON else "Stopped"
+                self.coordinator.stations[station - 1].state = status
+            if self._session is None and not self.coordinator.pending_stop_stations and self._starting_station is None:
+                external_station = next((i for i in self._all_stations() if self._switch_state(i) == STATE_ON), None)
+                if external_station is not None and self.coordinator.current_irrigation is None:
+                    self.coordinator.current_irrigation = ActiveIrrigationState.create(
+                        station=external_station, source="external", duration_minutes=None,
+                        station_name=self.coordinator._get_station_name(external_station),
+                    )
+                elif external_station is None:
+                    self.coordinator._clear_current_irrigation()
+        data = await self.coordinator.async_update_all_sensors()
+        if data is not None:
+            self.coordinator.async_set_updated_data(data)
+
+    async def _confirm_switch(self, station: int, expected: str) -> bool:
+        """Wait for an acknowledgement, never treating missing state as OFF."""
+        deadline = asyncio.get_running_loop().time() + CONFIRM_TIMEOUT
+        while True:
+            state = self._switch_state(station)
+            if state == expected:
+                return True
+            if state not in (STATE_ON, STATE_OFF):
+                return False
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+
+    def _invalidate_session(self) -> None:
+        session, self._session = self._session, None
+        if session is not None:
+            session.wake.set()
+
+    def _ensure_retry(self) -> None:
+        if not self._closing and (self._retry_task is None or self._retry_task.done()):
+            self._retry_task = self.hass.async_create_task(self._retry_pending_stops())
+
+    async def _retry_pending_stops(self) -> None:
+        try:
+            while self.coordinator.pending_stop_stations and not self._closing:
+                await asyncio.sleep(RETRY_INTERVAL)
+                async with self._lock:
+                    await self._attempt_pending_stops_locked()
+                    await self._publish()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("%s - Pending shutdown retry failed; shutdown remains persisted.",
+                              self.coordinator.controller_mac_address)
+        finally:
+            self._retry_task = None
+            if self.coordinator.pending_stop_stations and not self._closing:
+                self._ensure_retry()
+
+    async def _attempt_pending_stops_locked(self) -> bool:
+        """Only a successful command AND an OFF state discharge a stop intent."""
+        for station in list(self.coordinator.pending_stop_stations):
+            if self._switch_state(station) not in (STATE_ON, STATE_OFF):
+                if station not in self._unavailable_logged:
+                    _LOGGER.error("%s - Stop pending for unavailable station %s (%s).",
+                                  self.coordinator.controller_mac_address, station,
+                                  self.coordinator.station_switch_tracker.get_station_switch_entity_id(station))
+                    self._unavailable_logged.add(station)
+                continue
+            self._unavailable_logged.discard(station)
+            try:
+                async with asyncio.timeout(CONFIRM_TIMEOUT):
+                    await self.coordinator.api.turn_off_station_switch(station)
+                    if not await self._confirm_switch(station, STATE_OFF):
+                        raise APIConnectionError("Switch did not confirm OFF")
+            except Exception as exc:
+                _LOGGER.error("%s - Stop not confirmed for station %s (%s): %s; will retry.",
+                              self.coordinator.controller_mac_address, station,
+                              self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), exc)
+                continue
+            self.coordinator.pending_stop_stations.remove(station)
+            # Persist each confirmed stop without losing any unresolved stations.
+            await self.coordinator.save_persistent_data()
+
+        if not self.coordinator.pending_stop_stations:
+            self.coordinator.active_irrigation = None
+            self.coordinator._clear_current_irrigation()
+        else:
+            self._ensure_retry()
+        await self.coordinator.save_persistent_data()
+        return not self.coordinator.pending_stop_stations
+
+    async def _stop_locked(self, stations: list[int], reason: str) -> bool:
+        """Invalidate ownership before awaiting hardware or storage."""
+        self._invalidate_session()
+        _LOGGER.info("%s - Stopping irrigation: %s", self.coordinator.controller_mac_address, reason)
+        if self.coordinator._is_switch_control_method():
+            self.coordinator.pending_stop_stations = sorted(
+                set(self.coordinator.pending_stop_stations) | set(stations)
+            )
+            # Persist BEFORE attempting I/O; failures or restart must not lose the stop.
+            await self.coordinator.save_persistent_data()
+            stopped = await self._attempt_pending_stops_locked()
+        else:
+            try:
+                await self.coordinator.api.stop_sprinkle()
+            except Exception:
+                _LOGGER.exception("%s - Controller stop failed.", self.coordinator.controller_mac_address)
+                return False
+            self.coordinator.active_irrigation = None
+            self.coordinator._clear_current_irrigation()
+            for station in self.coordinator.stations:
+                station.state = "Stopped"
+            stopped = True
+        await self._publish()
+        return stopped
 
     async def restore_active_irrigation(self) -> None:
-        """Restore active irrigation safety for switch control method.
-
-        When using the switch control method, watering is implemented by
-        turning a station switch on and later turning it off. If Home Assistant
-        restarts mid-watering, ensure the switch is turned off at the expected
-        end time to avoid indefinite watering.
-        """
+        """Stop interrupted sessions on startup; never resume an uncertain valve."""
         if not self.coordinator._is_switch_control_method():
-            self.coordinator.active_irrigation = None
-            self.coordinator.current_irrigation = None
             return
+        active = self.coordinator.active_irrigation
+        if active is not None or self.coordinator.pending_stop_stations:
+            async with self._lock:
+                await self._stop_locked([active.station] if active else [], "recovering interrupted session")
 
-        if self.coordinator.active_irrigation is None:
-            self.coordinator.current_irrigation = None
+    def notify_switch_change(self, station: int, state: str | None) -> None:
+        """Latch loss/OFF immediately, even if a quick ON follows before the lock."""
+        if self._starting_station == station and state not in (STATE_ON, STATE_OFF):
+            self._start_interrupted = True
+        session = self._session
+        if session is not None and session.irrigation.station == station and state != STATE_ON:
+            session.interrupted = True
+            session.wake.set()
+
+    async def handle_switch_states(self) -> None:
+        """React immediately to loss, external OFF and recovery notifications."""
+        if self._closing or not self.coordinator._is_switch_control_method():
             return
-
-        if self.coordinator.active_irrigation.end_at is None:
-            self.coordinator.active_irrigation = None
-            self.coordinator.current_irrigation = None
-            await self.coordinator.save_persistent_data()
-            return
-
-        now = dt_util.now()
-
-        if self.coordinator.active_irrigation.has_ended(now):
-            _LOGGER.warning(
-                "%s - Found stale active irrigation in storage (station %s). Turning off now.",
-                self.coordinator.controller_mac_address,
-                self.coordinator.active_irrigation.station,
-            )
-            try:
-                await self.coordinator.api.turn_off_station_switch(
-                    self.coordinator.active_irrigation.station
-                )
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.warning(
-                    "%s - Failed turning off stale station switch",
-                    self.coordinator.controller_mac_address,
-                    exc_info=True,
-                )
-
-            self.coordinator.active_irrigation = None
-            self.coordinator.current_irrigation = None
-            await self.coordinator.save_persistent_data()
-            return
-
-        remaining_seconds = int(
-            (self.coordinator.active_irrigation.end_at - now).total_seconds()
-        )
-
-        if remaining_seconds <= 0:
-            self.coordinator.active_irrigation = None
-            self.coordinator.current_irrigation = None
-            await self.coordinator.save_persistent_data()
-            return
-
-        _LOGGER.info(
-            "%s - Restored active irrigation (station %s). Will stop in %s seconds.",
-            self.coordinator.controller_mac_address,
-            self.coordinator.active_irrigation.station,
-            remaining_seconds,
-        )
-
-        self.coordinator._set_current_irrigation(
-            station=self.coordinator.active_irrigation.station,
-            source=self.coordinator.active_irrigation.source,
-            duration_minutes=self.coordinator.active_irrigation.duration_minutes,
-            start_at=self.coordinator.active_irrigation.start_at,
-            end_at=self.coordinator.active_irrigation.end_at,
-        )
-
-        try:
-            self.coordinator.stations[
-                self.coordinator.active_irrigation.station - 1
-            ].state = "Sprinkling"
-        except Exception:  # pylint: disable=broad-except
-            pass
-
-        self.hass.async_create_task(
-            self.stop_irrigation_after_delay(
-                self.coordinator.active_irrigation.station,
-                remaining_seconds,
-            )
-        )
-
-    async def stop_irrigation_after_delay(self, station: int, delay_seconds: int) -> None:
-        """Stop irrigation after a delay."""
-        try:
-            await asyncio.sleep(delay_seconds)
-
-            if (
-                self.coordinator.active_irrigation is not None
-                and int(self.coordinator.active_irrigation.station) == int(station)
-            ):
-                await self.stop_irrigation()
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception(
-                "%s - Error while scheduling irrigation auto-stop",
-                self.coordinator.controller_mac_address,
-            )
+        async with self._lock:
+            if self.coordinator.pending_stop_stations:
+                await self._attempt_pending_stops_locked()
+            session = self._session
+            if session is not None:
+                station = session.irrigation.station
+                state = self._switch_state(station)
+                if state != STATE_ON or session.interrupted:
+                    self._generation += 1
+                    _LOGGER.error("%s - Station %s (%s) changed to %s during irrigation; stopping session.",
+                                  self.coordinator.controller_mac_address, station,
+                                  self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), state)
+                    await self._stop_locked([station], "switch no longer confirms ON")
+                else:
+                    session.wake.set()
 
     async def run_watering_cycle(self, scheduled_hour: str | None = None) -> None:
+        """Reject overlapping cycles and abandon a sequence replaced manually."""
+        if self._closing or self._cycle_running or self._session is not None:
+            _LOGGER.warning("%s - Skipping overlapping scheduled cycle.", self.coordinator.controller_mac_address)
+            return
+        self._cycle_running = True
+        generation = self._generation
+        try:
+            await self._run_watering_cycle(scheduled_hour, generation)
+        finally:
+            self._cycle_running = False
+
+    async def _run_watering_cycle(self, scheduled_hour: str | None, generation: int) -> None:
         """Run the scheduled watering cycle if all conditions are met."""
         _LOGGER.info(
             "%s - Running scheduled watering cycle...",
@@ -256,6 +357,7 @@ class IrrigationRunner:
                 area=area,
                 already_applied_mm=already_applied_mm,
                 expected_rain_today_mm=expected_rain_today_mm,
+                daily_target_mm=self.coordinator.sprinkle_target_amount_today[station_id - 1],
             )
 
             if plan.mm_per_minute <= 0:
@@ -298,203 +400,164 @@ class IrrigationRunner:
                     plan.mm_per_minute,
                 )
 
-                await self.start_irrigation(
+                if generation != self._generation:
+                    return
+                completed = await self.start_irrigation(
                     station_id,
                     plan.minutes_needed,
                     source="automatic",
+                    expected_generation=generation,
+                    run_seconds=plan.amount_to_apply_mm / plan.mm_per_minute * 60,
                 )
+                if not completed:
+                    return
 
     async def start_irrigation(
-        self,
-        station: int,
-        minutes: int | None = None,
-        *,
-        source: str = "manual",
-    ) -> None:
-        """Start irrigation on a station."""
-        duration = int(
-            minutes if minutes is not None else self.coordinator.irrigation_manual_duration
-        )
-        now = dt_util.now()
-        end_at = now + timedelta(minutes=duration)
-
-        _LOGGER.info(
-            "%s - Going to start watering on station %s for %s minutes. Source=%s",
-            self.coordinator.controller_mac_address,
-            station,
-            duration,
-            source,
-        )
-
-        self.coordinator.irrigation_stop_event.clear()
-
-        self.coordinator._set_current_irrigation(
-            station=station,
-            source=source,
-            duration_minutes=duration,
-            start_at=now,
-            end_at=end_at,
-        )
-
-        try:
+        self, station: int, minutes: int | None = None, *, source: str = "manual",
+        expected_generation: int | None = None, run_seconds: float | None = None,
+    ) -> bool:
+        """Serialize replacement and start; wait for this session only."""
+        duration = int(minutes if minutes is not None else self.coordinator.irrigation_manual_duration)
+        seconds = duration * 60 if run_seconds is None else min(duration * 60, run_seconds)
+        if duration <= 0 or seconds <= 0 or station not in self._all_stations():
+            raise ValueError("Station and duration must be valid positive values")
+        async with self._lock:
+            if self._closing or (expected_generation is not None and expected_generation != self._generation):
+                return False
+            if source != "automatic":
+                self._generation += 1
+            if self.coordinator.pending_stop_stations:
+                await self._attempt_pending_stops_locked()
+                if self.coordinator.pending_stop_stations:
+                    _LOGGER.error("%s - Start refused: controller shutdown is still pending.",
+                                  self.coordinator.controller_mac_address)
+                    return False
+            if self._session is not None or self.coordinator.current_irrigation is not None:
+                if not await self._stop_locked(self._all_stations(), "replacing previous session"):
+                    return False
             if self.coordinator._is_switch_control_method():
-                await self.coordinator.api.turn_on_station_switch(station)
+                # Other zones must be known too: a disconnected controller may
+                # still be watering and a Rain Bird OFF affects all its zones.
+                for station_id in self._all_stations():
+                    state = self._switch_state(station_id)
+                    if state not in (STATE_ON, STATE_OFF):
+                        _LOGGER.error("%s - Start refused: station %s switch %s is %s.",
+                                      self.coordinator.controller_mac_address, station_id,
+                                      self.coordinator.station_switch_tracker.get_station_switch_entity_id(station_id), state)
+                        await self._publish()
+                        return False
+                if any(self._switch_state(i) == STATE_ON for i in self._all_stations()):
+                    if not await self._stop_locked(self._all_stations(), "stopping externally active valves"):
+                        return False
 
-                self.coordinator.active_irrigation = ActiveIrrigationState.create(
-                    station=station,
-                    source=source,
-                    duration_minutes=duration,
-                    station_name=self.coordinator._get_station_name(station),
-                    start_at=now,
-                    end_at=end_at,
-                )
-
-                await self.coordinator.save_persistent_data()
-
-                self.coordinator.stations[station - 1].state = "Sprinkling"
-
-                await self.coordinator.station_switch_tracker.sync()
-
-                self.hass.async_create_task(
-                    self.stop_irrigation_after_delay(
-                        int(station),
-                        int(duration) * 60,
-                    )
-                )
-            else:
-                await self.coordinator.api.sprinkle_station(station, duration)
-                self.coordinator.stations[station - 1].state = "Sprinkling"
-
-        except APIConnectionError:
-            _LOGGER.error(
-                "%s - Failed due to connection error.",
-                self.coordinator.controller_mac_address,
+            now = dt_util.now()
+            irrigation = ActiveIrrigationState.create(
+                station=station, source=source, duration_minutes=duration,
+                station_name=self.coordinator._get_station_name(station), start_at=now,
+                end_at=now + timedelta(seconds=seconds),
             )
-            self.coordinator._clear_current_irrigation(station)
-            return
-
-        data = await self.coordinator.async_update_all_sensors()
-
-        if data is not None:
-            self.coordinator.async_set_updated_data(data)
-        else:
-            _LOGGER.warning(
-                "%s - async_update_all_sensors() returned None, skipping update.",
-                self.coordinator.controller_mac_address,
-            )
-
-        for _ in range(duration * 60):
-            if self.coordinator.irrigation_stop_event.is_set():
-                _LOGGER.info(
-                    "%s - Irrigation cancellation triggered.",
-                    self.coordinator.controller_mac_address,
-                )
-                break
-
-            await sleep(1)
-
-            self.coordinator.total_water_consumption += (
-                self.coordinator.water_flow_rate[station - 1] / 60
-            )
-
-            flow_rate = self.coordinator.water_flow_rate[station - 1]
-            area = self.coordinator.station_areas[station - 1] or 1
-            mm_per_minute = flow_rate / area
-
-            self.coordinator.sprinkle_total_amount_today[station - 1] += mm_per_minute / 60
-
-        else:
-            _LOGGER.info(
-                "%s - Finished watering on station %s.",
-                self.coordinator.controller_mac_address,
-                station,
-            )
-
-        if self.coordinator._is_switch_control_method():
+            # Store the start intent first: a timeout can occur after the
+            # controller has accepted ON, so even failed starts need shutdown.
+            self.coordinator.active_irrigation = irrigation
+            await self.coordinator.save_persistent_data()
+            self._starting_station = station
+            self._start_interrupted = False
             try:
-                await self.coordinator.api.turn_off_station_switch(station)
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.warning(
-                    "%s - Failed turning off station switch %s",
-                    self.coordinator.controller_mac_address,
-                    station,
-                    exc_info=True,
-                )
+                if self.coordinator._is_switch_control_method():
+                    async with asyncio.timeout(CONFIRM_TIMEOUT):
+                        await self.coordinator.api.turn_on_station_switch(station, duration)
+                        if not await self._confirm_switch(station, STATE_ON) or self._start_interrupted:
+                            raise APIConnectionError("Switch did not confirm ON")
+                else:
+                    await self.coordinator.api.sprinkle_station(station, duration)
+            except asyncio.CancelledError:
+                await self._stop_locked([station], "start task cancelled")
+                raise
+            except Exception as exc:
+                _LOGGER.error("%s - Station %s start failed: %s", self.coordinator.controller_mac_address, station, exc)
+                await self._stop_locked([station], "start was not confirmed")
+                return False
+            finally:
+                self._starting_station = None
 
-            self.coordinator.active_irrigation = None
-            await self.coordinator.save_persistent_data()
+            started = asyncio.get_running_loop().time()
+            irrigation.start_at = dt_util.now()
+            irrigation.end_at = irrigation.start_at + timedelta(seconds=seconds)
+            session = _Session(irrigation, started + seconds, started)
+            self._session = session
+            self.coordinator.current_irrigation = irrigation
+            self.coordinator.stations[station - 1].state = "Sprinkling"
+            _LOGGER.info("%s - Started session on station %s for %s minutes. Source=%s",
+                         self.coordinator.controller_mac_address, station, duration, source)
+            # Track the single worker for unload; no independent auto-stop timer.
+            worker = self.hass.async_create_task(self._run_session(session))
+            self._workers.add(worker)
+            worker.add_done_callback(self._workers.discard)
+            await self._publish()
+        return await asyncio.shield(worker)
 
-            await self.coordinator.station_switch_tracker.sync()
-
-            switch_entity_id = self.coordinator.station_switch_tracker.get_station_switch_entity_id(
-                station
-            )
-            switch_state = self.hass.states.get(switch_entity_id) if switch_entity_id else None
-
-            if switch_state is None or switch_state.state != STATE_ON:
-                self.coordinator.stations[station - 1].state = "Stopped"
-                self.coordinator._clear_current_irrigation(station)
-
-        else:
-            self.coordinator.stations[station - 1].state = "Stopped"
-            self.coordinator._clear_current_irrigation(station)
-
-        self.coordinator.last_sprinkle = dt_util.now()
-
-        data = await self.coordinator.async_update_all_sensors()
-
-        if data is not None:
-            self.coordinator.async_set_updated_data(data)
-        else:
-            _LOGGER.warning(
-                "%s - async_update_all_sensors() returned None, skipping update.",
-                self.coordinator.controller_mac_address,
-            )
-
-    async def stop_irrigation(self) -> None:
-        """Stop irrigation."""
-        _LOGGER.info(
-            "%s - Stopping watering...",
-            self.coordinator.controller_mac_address,
-        )
-
+    async def _run_session(self, session: _Session) -> bool:
+        """Account confirmed ON time and stop only while this session owns I/O."""
+        station = session.irrigation.station
         try:
-            if self.coordinator._is_switch_control_method():
-                await self.coordinator.api.turn_off_all_station_switches()
-            else:
-                await self.coordinator.api.stop_sprinkle()
-        except APIConnectionError:
-            _LOGGER.error(
-                "%s - Failed due to connection error.",
-                self.coordinator.controller_mac_address,
-            )
-            return
+            while True:
+                remaining = max(0.0, session.deadline - asyncio.get_running_loop().time())
+                try:
+                    await asyncio.wait_for(session.wake.wait(), min(SAMPLE_INTERVAL, remaining))
+                except TimeoutError:
+                    pass
+                async with self._lock:
+                    session.wake.clear()
+                    if self._session is not session:
+                        return False
+                    if self.coordinator._is_switch_control_method() and (self._switch_state(station) != STATE_ON or session.interrupted):
+                        self._generation += 1
+                        await self._stop_locked([station], "switch stopped or became unavailable")
+                        return False
+                    now = min(asyncio.get_running_loop().time(), session.deadline)
+                    elapsed = max(0.0, now - session.last_sample)
+                    session.last_sample = now
+                    liters = self.coordinator.water_flow_rate[station - 1] * elapsed / 60
+                    area = self.coordinator.station_areas[station - 1] or 1
+                    self.coordinator.total_water_consumption += liters
+                    self.coordinator.sprinkle_total_amount_today[station - 1] += liters / area
+                    if now >= session.deadline:
+                        self.coordinator.last_sprinkle = dt_util.now()
+                        return await self._stop_locked([station], "session duration completed")
+                    self.coordinator.last_sprinkle = dt_util.now()
+        except asyncio.CancelledError:
+            async with self._lock:
+                if self._session is session:
+                    await self._stop_locked([station], "session worker cancelled")
+            raise
+        except Exception:
+            _LOGGER.exception("%s - Irrigation session failed.", self.coordinator.controller_mac_address)
+            async with self._lock:
+                if self._session is session:
+                    await self._stop_locked([station], "session worker failed")
+            return False
 
-        self.coordinator.irrigation_stop_event.set()
+    async def stop_irrigation(self) -> bool:
+        """Explicit stop cancels the entire scheduled sequence too."""
+        async with self._lock:
+            self._generation += 1
+            return await self._stop_locked(self._all_stations(), "stop requested")
 
-        if self.coordinator._is_switch_control_method():
-            self.coordinator.active_irrigation = None
-            await self.coordinator.save_persistent_data()
-
-        self.coordinator._clear_current_irrigation()
-
-        for station_id in range(1, self.coordinator.num_stations + 1):
-            self.coordinator.stations[station_id - 1].state = "Stopped"
-
-        _LOGGER.info(
-            "%s - Stopped watering.",
-            self.coordinator.controller_mac_address,
-        )
-
-        data = await self.coordinator.async_update_all_sensors()
-
-        if data is not None:
-            self.coordinator.async_set_updated_data(data)
-        else:
-            _LOGGER.warning(
-                "%s - async_update_all_sensors() returned None after stopping watering.",
-                self.coordinator.controller_mac_address,
-            )
+    async def async_close(self) -> None:
+        """Stop before unloading and dispose of all worker/retry tasks."""
+        self._closing = True
+        async with self._lock:
+            self._generation += 1
+            if self._session is not None or self.coordinator.active_irrigation is not None:
+                await self._stop_locked(self._all_stations(), "integration unloading")
+        tasks = list(self._workers)
+        if self._retry_task is not None:
+            self._retry_task.cancel()
+            tasks.append(self._retry_task)
+        # Invalidated workers are already awake and return without hardware I/O.
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def turn_controller_on(self) -> None:
         """Turn irrigation controller on."""

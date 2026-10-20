@@ -835,3 +835,62 @@ However, all calculations depend on the accuracy of the configured station area,
 The integration can support other controllers if they can be controlled through Home Assistant services or station switches.
 
 Direct controller-specific support depends on available APIs and testing.
+
+
+## Irrigation session safety
+
+Only one session may control a controller at a time. A manual start replaces the
+previous session after its shutdown has completed; it also abandons the rest of
+an automatic sequence. An explicit stop abandons the sequence too. Every session
+owns its worker and deadline, so a replaced session cannot later stop a new zone
+or a new run of the same zone. Unloading stops the session and removes callbacks.
+
+For switch control, all configured station switches must have a known `on` or
+`off` state before a new run is allowed. An unavailable, unknown or missing switch
+refuses the start and records an error with the station and entity ID. A start
+must receive an `on` acknowledgement within 10 seconds. Rain Bird switches use
+`rainbird.start_irrigation` with the requested duration rather than the switch's
+configured default duration. Other switch integrations continue using
+`switch.turn_on`.
+
+If communication is lost during irrigation, the session stops accounting water
+and records a persistent shutdown obligation. The same applies to failed or
+unconfirmed start/stop commands. The integration sends OFF again as soon as the
+switch becomes available, with a five-second retry while a shutdown is unresolved.
+No new session is allowed until every pending stop has both a successful OFF
+command and an `off` state. This serialization matters for Rain Bird, where
+turning off any zone stops the whole physical controller.
+
+Interrupted switch sessions found after a Home Assistant restart are stopped
+immediately when reachable, rather than resumed. Pending stops survive restart.
+Station statuses distinguish `Unavailable` and `Stopping` from confirmed
+`Stopped`. The controller status sensor exposes `pending_stop_stations`; each
+station status sensor exposes `stop_pending`.
+
+Water consumption is an estimate from configured flow and elapsed, confirmed ON
+time, not a physical meter. No water is added while the switch is unavailable or
+a stop is pending. Time when the physical valve cannot be observed is unknown.
+Automatic runs use a precise session deadline for the planned amount, even when
+the hardware requires a duration rounded up to whole minutes.
+
+The daily target is the full active day's schedule. Saving that schedule keeps
+missed or interrupted watering in the remaining amount. For example, two daily
+five-minute slots at 21 L/min over 50 m² give a 4.2 mm daily target. If the morning
+slot is missed, saving the schedule still leaves 4.2 mm to apply; a subsequent
+2.1 mm manual watering leaves 2.1 mm. Slot execution is capped by the same daily
+target used by the sensors, and startup recalculates legacy cached targets.
+
+Generic controllers without a device unique ID use an entry-specific storage key
+so their schedules and pending shutdowns cannot overwrite one another. The legacy
+shared `irrigation_None` storage is copied only when exactly one generic controller
+exists and its new storage is absent. The original copy is preserved. With multiple
+generic controllers, that legacy shared file cannot be safely attributed automatically.
+
+### Regression tests
+
+Run `python -m unittest discover -s tests -v` and
+`python -m compileall -q custom_components`. The tests execute the production
+runtime, planning, API and persistence modules with minimal Home Assistant
+boundary fakes; they require no installed HA instance and never operate valves.
+CI runs them on Python 3.12 and 3.13. Physical Rain Bird acknowledgement timing and
+reconnection behavior still need validation on the installed controller.

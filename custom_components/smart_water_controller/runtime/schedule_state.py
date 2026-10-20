@@ -285,8 +285,8 @@ class ScheduleStateManager:
         self.coordinator.schedule = new_schedule
 
         self.coordinator.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts(
-            only_future_slots=True,
-            include_already_applied=True,
+            only_future_slots=False,
+            include_already_applied=False,
         )
 
         self.coordinator.forecasted_sprinkle_today = [

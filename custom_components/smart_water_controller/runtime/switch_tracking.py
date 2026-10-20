@@ -113,6 +113,7 @@ class StationSwitchTracker:
                     new_value,
                 )
 
+                self.coordinator.irrigation_runner.notify_switch_change(tracked_station_id, new_value)
                 self.hass.async_create_task(self.sync())
 
             unsubscribe = async_track_state_change_event(
@@ -137,95 +138,7 @@ class StationSwitchTracker:
         if not self.coordinator._is_switch_control_method():
             return
 
-        changed = False
-
-        for station_id in range(1, self.coordinator.num_stations + 1):
-            entity_id = self.get_station_switch_entity_id(station_id)
-
-            if not entity_id:
-                continue
-
-            state = self.hass.states.get(entity_id)
-
-            if state is None:
-                _LOGGER.debug(
-                    "%s - Station %s switch entity not found: %s",
-                    self.coordinator.controller_mac_address,
-                    station_id,
-                    entity_id,
-                )
-                continue
-
-            if state.state == STATE_ON:
-                new_station_state = "Sprinkling"
-
-                if self.coordinator._get_current_irrigation_station_id() is None:
-                    self.coordinator._set_current_irrigation(
-                        station=station_id,
-                        source="external",
-                        duration_minutes=None,
-                        start_at=dt_util.now(),
-                        end_at=None,
-                    )
-                    changed = True
-
-            elif state.state == STATE_OFF:
-                new_station_state = "Stopped"
-
-                if self.coordinator._get_current_irrigation_station_id() == station_id:
-                    self.coordinator._clear_current_irrigation(station_id)
-                    changed = True
-
-            else:
-                _LOGGER.debug(
-                    "%s - Station %s switch has unsupported state: %s=%s",
-                    self.coordinator.controller_mac_address,
-                    station_id,
-                    entity_id,
-                    state.state,
-                )
-                continue
-
-            if self.coordinator.stations[station_id - 1].state != new_station_state:
-                self.coordinator.stations[station_id - 1].state = new_station_state
-                changed = True
-
-                _LOGGER.info(
-                    "%s - Station %s state synchronized from switch %s: %s",
-                    self.coordinator.controller_mac_address,
-                    station_id,
-                    entity_id,
-                    new_station_state,
-                )
-
-        if self.coordinator.active_irrigation is not None:
-            active_station_id = self.coordinator.active_irrigation.station
-            active_switch_entity_id = self.get_station_switch_entity_id(active_station_id)
-            active_switch_state = (
-                self.hass.states.get(active_switch_entity_id)
-                if active_switch_entity_id
-                else None
-            )
-
-            if active_switch_state and active_switch_state.state == STATE_OFF:
-                _LOGGER.info(
-                    "%s - Active irrigation station %s is now off. "
-                    "Clearing persisted active irrigation.",
-                    self.coordinator.controller_mac_address,
-                    active_station_id,
-                )
-                self.coordinator.active_irrigation = None
-                self.coordinator._clear_current_irrigation(active_station_id)
-                await self.coordinator.save_persistent_data()
-                changed = True
-
-        if changed:
-            data = await self.coordinator.async_update_all_sensors()
-
-            if data is not None:
-                self.coordinator.async_set_updated_data(data)
-            else:
-                _LOGGER.warning(
-                    "%s - async_update_all_sensors() returned None after switch state sync.",
-                    self.coordinator.controller_mac_address,
-                )
+        await self.coordinator.irrigation_runner.handle_switch_states()
+        # The runner owns active-session and pending-stop lifecycle. Switch
+        # observation must never discard the durable shutdown obligation.
+        await self.coordinator.irrigation_runner._publish()

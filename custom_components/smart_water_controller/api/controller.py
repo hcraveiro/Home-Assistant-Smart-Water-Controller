@@ -5,6 +5,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 
 from ..const import (
     ACTION_SPRINKLE_STATION,
@@ -101,11 +102,18 @@ class SmartWaterControllerAPI:
             raise APIConnectionError(f"No switch entity configured for station {station}")
         return entity_id
 
-    async def turn_on_station_switch(self, station: int) -> None:
+    async def turn_on_station_switch(self, station: int, minutes: int | None = None) -> None:
         """Turn on the switch associated with a station."""
         entity_id = self._get_station_switch_entity(station)
         try:
-            await self.hass.services.async_call("switch", "turn_on", {"entity_id": entity_id}, blocking=True)
+            entry = er.async_get(self.hass).async_get(entity_id)
+            if entry is not None and entry.platform == "rainbird" and minutes is not None:
+                await self.hass.services.async_call(
+                    "rainbird", "start_irrigation",
+                    {"entity_id": entity_id, "duration": int(minutes)}, blocking=True,
+                )
+            else:
+                await self.hass.services.async_call("switch", "turn_on", {"entity_id": entity_id}, blocking=True)
         except Exception as exc:  # pylint: disable=broad-except
             raise APIConnectionError(f"Error turning on switch '{entity_id}': {exc}") from exc
 
@@ -119,6 +127,7 @@ class SmartWaterControllerAPI:
 
     async def turn_off_all_station_switches(self) -> None:
         """Turn off all configured station switches (best-effort)."""
+        failures = []
         for idx, entity_id in enumerate(self.station_switch_entities, start=1):
             eid = (entity_id or "").strip()
             if not eid:
@@ -126,7 +135,10 @@ class SmartWaterControllerAPI:
             try:
                 await self.hass.services.async_call("switch", "turn_off", {"entity_id": eid}, blocking=True)
             except Exception:  # pylint: disable=broad-except
-                _LOGGER.warning("Failed turning off station %s switch '%s'", idx, eid, exc_info=True)
+                failures.append(eid)
+                _LOGGER.error("Failed turning off station %s switch '%s'", idx, eid, exc_info=True)
+        if failures:
+            raise APIConnectionError(f"Shutdown failed for switches: {failures}")
 
     async def _async_call_configured_service(
         self,

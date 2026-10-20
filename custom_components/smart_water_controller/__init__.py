@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
+import asyncio
+from contextlib import suppress
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, CONF_NAME
@@ -55,6 +57,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) ->
     # async_config_entry_first_refresh() is special in that it does not log errors
     # if it fails.
     # ----------------------------------------------------------------------------
+    # Restore durable shutdown intent before any refresh can save defaults.
+    await coordinator.init_task
     await coordinator.async_config_entry_first_refresh()
 
     # ----------------------------------------------------------------------------
@@ -177,7 +181,14 @@ async def async_unload_entry(hass: HomeAssistant, config_entry: MyConfigEntry) -
     If you have created any custom services, they need to be removed here too.
     """
     runtime_data = config_entry.runtime_data
-    
+    coordinator = runtime_data.coordinator
+    coordinator.irrigation_scheduler.clear()
+    coordinator.station_switch_tracker.clear()
+    if not coordinator.init_task.done():
+        coordinator.init_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await coordinator.init_task
+    await coordinator.irrigation_runner.async_close()
 
     # Unload services
     #for service in hass.services.async_services_for_domain(DOMAIN):

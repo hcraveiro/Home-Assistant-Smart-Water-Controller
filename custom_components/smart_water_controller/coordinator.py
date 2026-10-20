@@ -24,6 +24,7 @@ from homeassistant.const import (
     CONF_SCAN_INTERVAL,
     CONF_NAME,
 )
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -210,17 +211,21 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             IRRIGATION_CONTROL_METHOD_SERVICE,
         )
     
+        self.pending_stop_stations: list[int] = []
         self.active_irrigation: ActiveIrrigationState | None = None
         self.current_irrigation: ActiveIrrigationState | None = None
     
+        self._storage_lock = asyncio.Lock()
+        generic_entries = [entry for entry in hass.config_entries.async_entries(DOMAIN) if not entry.unique_id]
         self.storage = IrrigationStorage(
             hass,
-            f"irrigation_{config_entry.unique_id}",
+            f"irrigation_{config_entry.unique_id or config_entry.entry_id}",
             num_stations=self.num_stations,
             station_name_resolver=self._get_station_name,
             log_prefix=f"{self.controller_mac_address} - ",
+            legacy_storage_key="irrigation_None"
+            if not config_entry.unique_id and len(generic_entries) == 1 else None,
         )
-        self.irrigation_stop_event = asyncio.Event()
     
         self.schedule: list[dict[str, Any]] | None = None
         self.next_schedule: datetime | None = None
@@ -257,6 +262,9 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     async def update_config(self, new_config: ConfigEntry):
         """Update the coordinator with new configuration."""
         _LOGGER.info(f"{self.controller_mac_address} - Updating Coordinator with new config...")
+        if self.active_irrigation is not None or self.pending_stop_stations:
+            if not await self.irrigation_runner.stop_irrigation():
+                raise HomeAssistantError("Cannot reconfigure until controller shutdown is confirmed")
         self.config_entry = new_config
     
         self._controller_mac_address = _extract_mac_address(
@@ -338,6 +346,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         ]
     
         await self.initialize_schedule()
+        self.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts()
         await self.station_switch_tracker.setup()
         await self.async_request_refresh()
     
@@ -378,11 +387,13 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.remaining_sprinkle_today = state.remaining_sprinkle_today
     
         self.schedule = state.schedule
+        self.pending_stop_stations = state.pending_stop_stations
         self.active_irrigation = state.active_irrigation
         
     async def save_persistent_data(self):
         """Save persistent data to storage."""
-        await self.storage.async_save(self._build_persistent_state())
+        async with self._storage_lock:
+            await self.storage.async_save(self._build_persistent_state())
 
     def _build_persistent_state(self) -> PersistentIrrigationState:
         """Build persistent state from the coordinator."""
@@ -407,6 +418,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             remaining_sprinkle_today=self.remaining_sprinkle_today,
             schedule=self.schedule,
             active_irrigation=self.active_irrigation,
+            pending_stop_stations=list(self.pending_stop_stations),
         )
 
 
@@ -430,6 +442,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             )
     
         await self.initialize_schedule()
+        self.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts()
         await self.station_switch_tracker.setup()
     
         # Run immediately after initialization.
