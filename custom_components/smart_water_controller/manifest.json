@@ -8,12 +8,12 @@
   "dependencies": [
     "solem_toolkit"
   ],
-  "documentation": "https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller",
+  "documentation": "https://github.com/hcraveiro/Home-Assistant-Smart-Water-Controller",
   "homekit": {},
   "iot_class": "local_polling",
   "requirements": ["tenacity"],
   "single_config_entry": false,
   "ssdp": [],
-  "version": "1.1.1b2",
+  "version": "1.1.1",
   "zeroconf": []
 }

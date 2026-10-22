@@ -45,6 +45,8 @@ When configured with a weather provider, the integration can reduce or skip wate
   - [Schedule Changes During the Day](#schedule-changes-during-the-day)
   - [Switch State Tracking](#switch-state-tracking)
   - [Active Irrigation Tracking and Restart Safety](#active-irrigation-tracking-and-restart-safety)
+  - [Irrigation session safety](#irrigation-session-safety)
+  - [Regression tests](#regression-tests)
   - [FAQ](#faq)
 
 ---
@@ -155,11 +157,11 @@ switch.rain_bird_sprinkler_2
 In this mode:
 
 - Turning a station switch on starts watering that station.
-- Turning a station switch off stops watering that station.
+- Turning a station switch off requests shutdown. With Rain Bird, this stops the whole physical controller.
 - The integration listens to switch state changes.
 - If a station switch is turned on manually, the station status changes to `Sprinkling`.
-- If a station switch is turned off manually or by the external controller, the station status changes to `Stopped`.
-- If Home Assistant restarts while a station switch is already on, the integration syncs the station status from the switch state after startup.
+- A confirmed shutdown is shown as `Stopped`. Failed or unconfirmed shutdowns remain pending; station status can be `Stopping` or `Unavailable`.
+- If Home Assistant restarts during an integration-started switch session, shutdown is attempted immediately and retried when communication returns.
 
 This is useful for controllers such as Rain Bird when each zone or station is available as a switch.
 
@@ -327,6 +329,8 @@ This integration exposes several sensors per controller/config entry.
 
   - `Stopped`
   - `Sprinkling`
+  - `Stopping` when shutdown is pending and the switch is reachable
+  - `Unavailable` when the switch state is unknown, unavailable or missing
 
   Each station status entity also exposes irrigation attributes:
 
@@ -334,6 +338,9 @@ This integration exposes several sensors per controller/config entry.
   - `duration_minutes`
   - `started_at`
   - `end_at`
+  - `stop_pending`
+
+The controller status sensor also exposes `pending_stop_stations`.
 
 When using switch-based control, station status is synchronized from the configured station switches.
 
@@ -606,11 +613,11 @@ Water needed now: 8 - 1 - 6 = 1 mm
 
 ## Schedule Changes During the Day
 
-If the schedule is changed during the day, the integration recalculates the remaining plan for today.
+If the schedule is changed during the day, the integration recalculates the full daily target from the active month's schedule. Water already applied today is preserved and subtracted from that target.
 
-Only future watering slots are considered for the new schedule.
+Only future callbacks are scheduled; past watering slots are not replayed immediately. Missed or interrupted watering remains in the daily amount still needed and can be made up at a later slot.
 
-Water already applied today is preserved.
+Saving the same schedule does not erase that deficit. For two daily five-minute slots at 21 L/min over 50 m², the target stays at 4.2 mm. If no water was applied in the morning, 4.2 mm remains; a subsequent 2.1 mm manual watering leaves 2.1 mm.
 
 Example:
 
@@ -636,7 +643,7 @@ If instead the new schedule is:
 20:00
 ```
 
-Then the 08:00 slot is ignored because it has already passed, and only 20:00 is scheduled.
+Only the 20:00 callback is scheduled because 08:00 has passed. Both slots still contribute to the daily target; the later slot accounts for the water already applied and any remaining deficit.
 
 ---
 
@@ -657,11 +664,9 @@ If a switch turns on:
 Station status = Sprinkling
 ```
 
-If a switch turns off:
+If a switch turns off during a session, the session stops accounting water and requests shutdown. `Stopped` is shown once shutdown is confirmed.
 
-```text
-Station status = Stopped
-```
+An unavailable, unknown or missing switch is shown as `Unavailable`. If an OFF command fails or is not confirmed, shutdown stays pending (`Stopping` when reachable), is persisted and is retried after reconnection.
 
 This also helps after Home Assistant restarts.
 
@@ -683,21 +688,10 @@ This includes:
 - End time.
 - Duration in minutes.
 
-This allows the integration to restore the current irrigation state after a Home Assistant restart.
+For integration-started switch sessions, a Home Assistant restart triggers immediate shutdown rather than resuming the interrupted session. If a switch is unavailable or an OFF command fails, the pending shutdown is preserved and retried when the switch becomes available, with periodic retries while unresolved.
 
-If Home Assistant restarts while irrigation is active and the configured end time has not passed yet, the integration restores:
+The integration does not report a confirmed stop merely because an OFF command was attempted. Both a successful command and an `off` state are required. New sessions are blocked until all pending shutdowns are confirmed.
 
-```text
-Current Irrigation Station
-Irrigation End Time
-Station status = Sprinkling
-```
-
-It also schedules a new automatic stop based on the remaining time.
-
-If Home Assistant restarts after the expected end time has already passed, the integration clears the active irrigation state and attempts to turn off the station switch.
-
-For switch-based control, this helps prevent a station from being left watering indefinitely after a Home Assistant restart.
 
 If a station switch is turned on externally, outside the integration, the integration detects the station as `Sprinkling`, but it may not know the irrigation duration or end time.
 
@@ -780,11 +774,9 @@ in 7 minutes
 
 ### What happens if Home Assistant restarts during irrigation?
 
-If the irrigation was started by the integration, the active irrigation metadata is restored from storage.
+For irrigation started by the integration using station switches, the interrupted session is stopped immediately when reachable. It is not resumed.
 
-If the expected end time has not passed, the integration restores the active irrigation state and schedules a new automatic stop.
-
-If the expected end time has passed, the integration clears the active irrigation state and attempts to stop the station.
+Failed or unconfirmed shutdowns survive restart and are retried when communication returns. New sessions remain blocked until shutdown is confirmed.
 
 ### Can the integration know the end time if I manually turn on the station switch?
 
@@ -892,5 +884,8 @@ Run `python -m unittest discover -s tests -v` and
 `python -m compileall -q custom_components`. The tests execute the production
 runtime, planning, API and persistence modules with minimal Home Assistant
 boundary fakes; they require no installed HA instance and never operate valves.
-CI runs them on Python 3.12 and 3.13. Physical Rain Bird acknowledgement timing and
-reconnection behavior still need validation on the installed controller.
+CI runs them on Python 3.12 and 3.13. Normal sequential watering was also verified
+on a Rain Bird controller across evening and morning cycles: each zone completed,
+the switches returned to OFF, and applied/remaining amounts matched the daily target.
+The disconnect/reconnect and failed-command scenarios are covered by automated tests;
+physical reconnection behavior still requires a separate field test.
