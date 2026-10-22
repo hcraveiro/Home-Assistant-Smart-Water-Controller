@@ -46,6 +46,7 @@ class PersistentIrrigationState:
 
     schedule: list[dict[str, Any]] | None = None
     active_irrigation: ActiveIrrigationState | None = None
+    pending_stop_stations: list[int] = field(default_factory=list)
 
 
 class IrrigationStorage:
@@ -59,9 +60,11 @@ class IrrigationStorage:
         num_stations: int,
         station_name_resolver: Callable[[int | None], str | None],
         log_prefix: str = "",
+        legacy_storage_key: str | None = None,
     ) -> None:
         """Initialize irrigation storage."""
         self._store = Store(hass, 1, storage_key)
+        self._legacy_store = Store(hass, 1, legacy_storage_key) if legacy_storage_key else None
         self._num_stations = num_stations
         self._station_name_resolver = station_name_resolver
         self._log_prefix = log_prefix
@@ -73,6 +76,13 @@ class IrrigationStorage:
     async def async_load(self) -> PersistentIrrigationState:
         """Load persistent state."""
         storage_data = await self._store.async_load()
+        if not storage_data and self._legacy_store is not None:
+            storage_data = await self._legacy_store.async_load()
+            if storage_data:
+                # Preserve the legacy copy. Only an unambiguous single generic
+                # controller may migrate the formerly shared irrigation_None key.
+                await self._store.async_save(storage_data)
+                _LOGGER.info("%sMigrated legacy controller storage to an entry-specific key.", self._log_prefix)
 
         if not storage_data:
             _LOGGER.debug("%sNo persistent data found, using defaults.", self._log_prefix)
@@ -180,6 +190,10 @@ class IrrigationStorage:
             remaining_sprinkle_today=remaining_sprinkle_today,
             schedule=storage_data.get("schedule"),
             active_irrigation=active_irrigation,
+            pending_stop_stations=[
+                station for station in range(1, self._num_stations + 1)
+                if station in (storage_data.get("pending_stop_stations") or [])
+            ],
         )
 
     def _restore_remaining_sprinkle_today(
@@ -226,6 +240,7 @@ class IrrigationStorage:
             "forecasted_sprinkle_today": state.forecasted_sprinkle_today,
             "remaining_sprinkle_today": state.remaining_sprinkle_today,
             "schedule": state.schedule,
+            "pending_stop_stations": list(state.pending_stop_stations),
             "active_irrigation": state.active_irrigation.to_storage()
             if state.active_irrigation
             else None,

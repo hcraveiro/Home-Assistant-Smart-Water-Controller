@@ -92,6 +92,7 @@ class StateSensor(SmartWaterControllerBaseEntity, SensorEntity):
         attrs = {}
 
         if self.device_id == self.coordinator.controller.device_id:
+            attrs["pending_stop_stations"] = list(self.coordinator.pending_stop_stations)
             attrs["schedule"] = self.coordinator.schedule or []
             attrs["num_stations"] = self.coordinator.num_stations
             attrs["service_prefix"] = self.coordinator.controller_service_prefix
@@ -105,6 +106,7 @@ class StateSensor(SmartWaterControllerBaseEntity, SensorEntity):
         )
 
         if station_number is not None:
+            attrs["stop_pending"] = int(station_number) in self.coordinator.pending_stop_stations
             try:
                 attrs.update(
                     self.coordinator.get_station_irrigation_attributes(

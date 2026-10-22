@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 import logging
+import math
 from typing import Any
 
 from homeassistant.util import dt as dt_util
@@ -259,6 +260,7 @@ def calculate_station_slot_irrigation_plan(
     area: float | int | None,
     already_applied_mm: float,
     expected_rain_today_mm: float,
+    daily_target_mm: float | None = None,
 ) -> StationSlotIrrigationPlan:
     """Calculate how much a station should water in the current slot."""
     mm_per_minute = calculate_mm_per_minute(flow_rate, area)
@@ -277,13 +279,15 @@ def calculate_station_slot_irrigation_plan(
 
     planned_per_slot_mm = scheduled_minutes * mm_per_minute
     planned_until_slot_mm = planned_per_slot_mm * current_slot_index
+    if daily_target_mm is not None:
+        planned_until_slot_mm = min(planned_until_slot_mm, max(0.0, daily_target_mm))
 
     amount_to_apply_now_mm = max(
         0.0,
         planned_until_slot_mm - (already_applied_mm + expected_rain_today_mm),
     )
 
-    minutes_needed = int((amount_to_apply_now_mm / mm_per_minute) + 0.999)
+    minutes_needed = max(0, math.ceil(amount_to_apply_now_mm / mm_per_minute - 1e-9))
 
     return StationSlotIrrigationPlan(
         station_id=station_id,
