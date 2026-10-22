@@ -1,8 +1,8 @@
-"""Sensor setup for our integration."""
+﻿"""Sensor setup for our integration."""
 
 from dataclasses import dataclass
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -19,6 +19,7 @@ from homeassistant.util import dt as dt_util
 from .. import MyConfigEntry
 from .base import SmartWaterControllerBaseEntity
 from ..coordinator import SmartWaterControllerCoordinator
+from ..helpers import planning
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,6 +96,12 @@ class StateSensor(SmartWaterControllerBaseEntity, SensorEntity):
             attrs["pending_stop_stations"] = list(self.coordinator.pending_stop_stations)
             attrs["schedule"] = self.coordinator.schedule or []
             attrs["num_stations"] = self.coordinator.num_stations
+            # The schedule card looks up station_names to label its rows. It was
+            # never published, so the card always fell back to "Station 1",
+            # "Station 2", ... no matter how the stations had been named.
+            attrs["station_names"] = list(
+                getattr(self.coordinator, "station_names", None) or []
+            )
             attrs["service_prefix"] = self.coordinator.controller_service_prefix
             attrs["controller_service_prefix"] = self.coordinator.controller_service_prefix
             attrs.update(self.coordinator.get_controller_irrigation_attributes())
@@ -142,6 +149,86 @@ class NextScheduleSensor(SmartWaterControllerBaseEntity, SensorEntity):
                 _LOGGER.warning("Invalid format for schedule: %s - %s", next_schedule, ex)
 
         return None
+
+    @property
+    def extra_state_attributes(self):
+        """Describe the stored plan next to the next run time.
+
+        The raw schedule is already published on the controller sensor, but as
+        twelve nested dicts it is unreadable without a template. A plan that
+        outlives the card that created it has to be visible somewhere a user
+        actually looks, and this sensor is where they look to ask "when does it
+        water next?".
+        """
+        configured_months = planning.describe_schedule(
+            self.coordinator.schedule,
+            list(getattr(self.coordinator, "station_names", None) or []),
+        )
+
+        attrs = {
+            "configured_months": configured_months,
+            "has_watering_slots": bool(configured_months),
+        }
+        attrs.update(self._interval_attributes())
+
+        return attrs
+
+    def _interval_attributes(self) -> dict:
+        """Publish what actually decides whether today waters.
+
+        `interval_days` is not a calendar grid. `runtime/schedule_state.py`
+        anchors it on `max(last_rain, last_sprinkle)`, so rain resets the
+        countdown: "every 2 days" in June means "two days after the ground last
+        got wet", not "even days". Anything that draws a plan - a calendar in
+        the card, an automation, a person reading a dashboard - needs the
+        anchor, not just the interval, or it draws a grid that the first
+        thunderstorm invalidates.
+
+        The two timestamps are already published as sensors, but on two
+        *different* devices with different entity prefixes (`last_rain` belongs
+        to the weather side), so a card cannot derive their entity ids from the
+        controller it was pointed at. Here they sit next to the interval they
+        act on, which costs one lookup instead of three and a config option.
+
+        Deliberately tolerant: an attribute for a dashboard must never be the
+        thing that takes the sensor offline.
+        """
+        attrs: dict = {}
+
+        try:
+            schedule = self.coordinator.schedule or []
+            month_config = schedule[dt_util.now().month - 1] if schedule else None
+            interval_days = int((month_config or {}).get("interval_days") or 0)
+
+            last_rain = getattr(self.coordinator, "last_rain", None)
+            last_sprinkle = getattr(self.coordinator, "last_sprinkle", None)
+            events = [event for event in (last_rain, last_sprinkle) if event]
+
+            attrs["interval_days"] = interval_days
+            attrs["last_rain"] = last_rain.isoformat() if last_rain else None
+            attrs["last_sprinkle"] = last_sprinkle.isoformat() if last_sprinkle else None
+
+            anchor = max(events) if events else None
+            attrs["interval_anchor"] = anchor.isoformat() if anchor else None
+
+            # Both read off the same helper the scheduler uses, rather than
+            # recomputed here: two implementations of "is today blocked?" would
+            # drift, and the dashboard would be the last place to find out.
+            state = getattr(self.coordinator, "schedule_state", None)
+            blocked = bool(
+                state and interval_days > 0
+                and state.recent_event_blocks_today(interval_days)
+            )
+            attrs["blocked_today"] = blocked
+            attrs["blocked_until"] = (
+                (anchor.date() + timedelta(days=interval_days)).isoformat()
+                if blocked and anchor
+                else None
+            )
+        except Exception as ex:  # pylint: disable=broad-except
+            _LOGGER.debug("Could not describe the watering interval: %s", ex)
+
+        return attrs
 
 
 class LastSprinkleSensor(SmartWaterControllerBaseEntity, SensorEntity):

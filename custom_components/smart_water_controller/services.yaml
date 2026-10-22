@@ -1,4 +1,24 @@
+clear_irrigation_schedule:
+  name: "Clear irrigation schedule"
+  description: >-
+    Stops a stored watering plan. The schedule belongs to the integration, not
+    to the dashboard card that created it, so it keeps running after the card is
+    deleted; this is how you turn it off. Leave the month empty to clear all
+    twelve months.
+  fields:
+    month:
+      name: "Month"
+      description: "Clear only this month (1 = January). Leave empty to clear the whole year."
+      required: false
+      example: 9
+      selector:
+        number:
+          min: 1
+          max: 12
+          mode: box
+
 set_irrigation_schedule:
+  name: "Set irrigation schedule"
   description: "Defines the schedule for watering"
   fields:
     schedule:

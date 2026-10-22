@@ -1,4 +1,4 @@
-"""Irrigation planning helpers."""
+﻿"""Irrigation planning helpers."""
 
 from __future__ import annotations
 
@@ -13,6 +13,23 @@ from homeassistant.util import dt as dt_util
 from .util import parse_time_string
 
 _LOGGER = logging.getLogger(__name__)
+
+# Used only to describe a schedule in a state attribute, so plain English rather
+# than a translated name: attributes are not localized anywhere else either.
+MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +65,58 @@ def get_valid_watering_hours(
             _LOGGER.error("%sInvalid hour format: %s", log_prefix, hour)
 
     return sorted(valid_hours, key=lambda value: parse_time_string(value))
+
+
+def describe_schedule(
+    schedule: list[dict[str, Any]] | None,
+    station_names: list[str] | None = None,
+) -> list[str]:
+    """Summarize the months that actually water, one readable line each.
+
+    The schedule lives in the integration's storage, not in the dashboard card
+    that wrote it, so a plan keeps running after its card is deleted. Published
+    as an attribute this makes that plan visible without a template, which is
+    how a forgotten slot went unnoticed until it watered on its own.
+
+    Deliberately tolerant: a malformed month is described as best it can be
+    rather than raising, because this only ever feeds a state attribute.
+    """
+    lines: list[str] = []
+
+    for index, month_config in enumerate((schedule or [])[:12]):
+        if not isinstance(month_config, dict):
+            continue
+
+        hours = [str(hour) for hour in (month_config.get("hours") or []) if hour]
+
+        if not hours:
+            continue
+
+        stations = month_config.get("stations") or {}
+        durations: list[str] = []
+
+        for station_index in range(len(stations)):
+            minutes = stations.get(f"station_{station_index + 1}_minutes") or 0
+
+            if not minutes:
+                continue
+
+            name = None
+            if station_names and station_index < len(station_names):
+                name = station_names[station_index]
+
+            durations.append(f"{minutes} min on {name or f'station {station_index + 1}'}")
+
+        interval_days = month_config.get("interval_days") or 0
+        interval = "every day" if interval_days < 2 else f"every {interval_days} days"
+
+        lines.append(
+            f"{MONTH_NAMES[index]}: {', '.join(sorted(hours))}"
+            f" - {', '.join(durations) if durations else 'no station enabled'}"
+            f" - {interval}"
+        )
+
+    return lines
 
 
 def get_future_watering_slots_for_day(

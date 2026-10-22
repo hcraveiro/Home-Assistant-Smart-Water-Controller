@@ -1,4 +1,4 @@
-"""Schedule state helpers for Smart Water Controller."""
+﻿"""Schedule state helpers for Smart Water Controller."""
 
 from __future__ import annotations
 
@@ -317,6 +317,56 @@ class ScheduleStateManager:
             self.coordinator.controller_mac_address,
         )
 
+    def _empty_month_config(self) -> dict:
+        """Build one month that never waters.
+
+        No hours means no slot is ever due, which is what makes the month inert;
+        `interval_days: 0` is only the "no interval constraint" default and is
+        harmless on its own.
+        """
+        return {
+            "interval_days": 0,
+            "stations": {
+                f"station_{i+1}_minutes": 0
+                for i in range(self.coordinator.num_stations)
+            },
+            "hours": [],
+        }
+
+    async def clear_schedule(self, month: int | None = None) -> None:
+        """Clear the whole schedule, or a single month (1-12).
+
+        The schedule outlives the dashboard card that wrote it, so deleting the
+        card leaves a plan running with no way to stop it from the UI. This is
+        that way out, and it reuses set_schedule() so the derived daily targets,
+        the next scheduled run and the sensors are all recomputed as usual.
+        """
+        if month is None:
+            _LOGGER.info(
+                "%s - Clearing the whole schedule.",
+                self.coordinator.controller_mac_address,
+            )
+            new_schedule = [self._empty_month_config() for _ in range(12)]
+        else:
+            _LOGGER.info(
+                "%s - Clearing schedule for month %s.",
+                self.coordinator.controller_mac_address,
+                month,
+            )
+            # Start from the stored schedule when there is one, so clearing a
+            # single month cannot silently wipe the other eleven.
+            new_schedule = [
+                dict(month_config) if isinstance(month_config, dict) else self._empty_month_config()
+                for month_config in (self.coordinator.schedule or [])[:12]
+            ]
+
+            while len(new_schedule) < 12:
+                new_schedule.append(self._empty_month_config())
+
+            new_schedule[month - 1] = self._empty_month_config()
+
+        await self.set_schedule(new_schedule)
+
     async def initialize_schedule(self) -> None:
         """Initialize the schedule if not already set."""
         _LOGGER.info(
@@ -330,19 +380,7 @@ class ScheduleStateManager:
                 self.coordinator.controller_mac_address,
             )
 
-            new_schedule = [
-                {
-                    "interval_days": 0,
-                    "stations": {
-                        f"station_{i+1}_minutes": 0
-                        for i in range(self.coordinator.num_stations)
-                    },
-                    "hours": [],
-                }
-                for _ in range(12)
-            ]
-
-            self.coordinator.schedule = new_schedule
+            self.coordinator.schedule = [self._empty_month_config() for _ in range(12)]
             await self.coordinator.save_persistent_data()
             return
 
