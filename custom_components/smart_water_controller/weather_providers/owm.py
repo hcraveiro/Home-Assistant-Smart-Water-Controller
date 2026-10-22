@@ -6,8 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import aiohttp
-
+from homeassistant.core import HomeAssistant
 from homeassistant.util.dt import as_local
 from homeassistant.util import dt as dt_util
 
@@ -16,6 +15,7 @@ from ..const import (
     OPEN_WEATHER_MAP_CURRENT_URL,
     OPEN_WEATHER_MAP_FORECAST_URL,
 )
+from .common import FORECAST_BLOCK_HOURS, fetch_json, rain_rate_from_owm_payload
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,17 +27,38 @@ class OpenWeatherMapProvider:
     providers without changing coordinator logic.
     """
 
-    def __init__(self, api_key: str, latitude: str, longitude: str, timeout: int) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        latitude: str,
+        longitude: str,
+        timeout: int,
+        hass: HomeAssistant | None = None,
+    ) -> None:
         self.api_key = api_key
         self.latitude = latitude
         self.longitude = longitude
         self.timeout = timeout
+        self.hass = hass
 
         self._cache_forecast: list[dict[str, Any]] | None = None
         self._cache_current: dict[str, Any] | None = None
         self._last_forecast_fetch_time = None
         self.last_forecast_date = dt_util.now().date()
         self._last_current_fetch_time = None
+
+    def restore_cache(
+        self,
+        *,
+        forecast: list[dict[str, Any]] | None,
+        current: dict[str, Any] | None,
+    ) -> None:
+        """Restore caches persisted by the coordinator across restarts."""
+        if forecast:
+            self._cache_forecast = list(forecast)
+
+        if current:
+            self._cache_current = dict(current)
 
     async def get_current_weather(self) -> Any:
         now = dt_util.now()  # timezone-aware now
@@ -47,7 +68,15 @@ class OpenWeatherMapProvider:
             and self._last_current_fetch_time
             and now - self._last_current_fetch_time < timedelta(minutes=self.timeout)
         ):
-            _LOGGER.debug("Returning cached data.")
+            # Named, because get_forecast() logged the same sentence: with two
+            # independent caches and one message, a log full of "Returning
+            # cached data." cannot answer the only question worth asking, which
+            # is *which* of the two has gone stale.
+            _LOGGER.debug(
+                "Returning cached current weather, fetched at %s (timeout %s min).",
+                self._last_current_fetch_time,
+                self.timeout,
+            )
             return self._cache_current
 
         weather_url = (
@@ -55,36 +84,32 @@ class OpenWeatherMapProvider:
         )
         _LOGGER.debug("Getting current weather at : %s", weather_url)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(weather_url) as response:
-                try:
-                    data = await response.json()
-                    _LOGGER.debug("Current Weather Data: %s", data)
+        data = await fetch_json(weather_url, "Current Weather data", hass=self.hass)
+        _LOGGER.debug("Current Weather Data: %s", data)
 
-                    if "dt" in data:
-                        utc_dt = datetime.fromtimestamp(data["dt"], tz=timezone.utc)
-                        local_dt = as_local(utc_dt)
-                        data["dt_txt"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+        if "dt" in data:
+            utc_dt = datetime.fromtimestamp(data["dt"], tz=timezone.utc)
+            local_dt = as_local(utc_dt)
+            data["dt_txt"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-                        _LOGGER.debug(
-                            "UTC time from API: %s, Local time after as_local: %s",
-                            utc_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                            local_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                        )
+            _LOGGER.debug(
+                "UTC time from API: %s, Local time after as_local: %s",
+                utc_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                local_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            )
 
-                    self._cache_current = data
-                    self._last_current_fetch_time = now
-                except Exception as exc:  # pylint: disable=broad-except
-                    _LOGGER.error("Error processing Current Weather data: JSON format invalid!")
-                    raise APIConnectionError(
-                        "Error processing Current Weather data: JSON format invalid!"
-                    ) from exc
+        self._cache_current = data
+        self._last_current_fetch_time = now
 
         return self._cache_current
 
     async def is_raining(self) -> dict:
         current_weather = await self.get_current_weather()
-        return {"is_raining": "rain" in current_weather, "current": current_weather}
+        return {
+            "is_raining": "rain" in current_weather,
+            "current": current_weather,
+            "rain_rate_mm_per_hour": rain_rate_from_owm_payload(current_weather),
+        }
 
     async def get_forecast(self) -> list:
         """Obtains and preserves data from 00h till 00h of the next day."""
@@ -95,7 +120,12 @@ class OpenWeatherMapProvider:
             and self._last_forecast_fetch_time
             and now - self._last_forecast_fetch_time < timedelta(minutes=self.timeout)
         ):
-            _LOGGER.debug("Returning cached data.")
+            _LOGGER.debug(
+                "Returning cached forecast (%s blocks), fetched at %s (timeout %s min).",
+                len(self._cache_forecast),
+                self._last_forecast_fetch_time,
+                self.timeout,
+            )
             return self._cache_forecast
 
         temp_cache = self._cache_forecast.copy() if self._cache_forecast else []
@@ -122,8 +152,13 @@ class OpenWeatherMapProvider:
                 self._cache_forecast.append(last_00_03_forecast)
                 _LOGGER.debug("Inserting 00h block in new cache: %s", last_00_03_forecast)
 
+        # Every 3-hour block of today that has not started yet, plus the 00h
+        # block of tomorrow which is kept across the day rollover above.
+        # FORECAST_BLOCK_HOURS must include 21: leaving it out asked for one
+        # block too few, so the 21:00-24:00 block of the day was never fetched
+        # and evening rain was missing from the daily forecast total.
         current_hour = now.hour
-        forecast_hours = [h for h in range(0, 21, 3) if h >= current_hour]
+        forecast_hours = [h for h in FORECAST_BLOCK_HOURS if h >= current_hour]
         forecast_hours.append(0)
         items = len(forecast_hours)
 
@@ -135,45 +170,40 @@ class OpenWeatherMapProvider:
         if self._cache_forecast is None:
             self._cache_forecast = []
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(weather_url) as response:
-                try:
-                    data = await response.json()
-                    _LOGGER.debug("Forecast Weather Data: %s", data)
+        try:
+            data = await fetch_json(weather_url, "Forecast Weather data", hass=self.hass)
+            _LOGGER.debug("Forecast Weather Data: %s", data)
 
-                    for item in data["list"]:
-                        forecast_time_str = item["dt_txt"]
+            for item in data["list"]:
+                forecast_time_str = item["dt_txt"]
 
-                        existing_index = next(
-                            (
-                                index
-                                for index, forecast in enumerate(self._cache_forecast)
-                                if forecast.get("dt_txt") == forecast_time_str
-                            ),
-                            None,
-                        )
+                existing_index = next(
+                    (
+                        index
+                        for index, forecast in enumerate(self._cache_forecast)
+                        if forecast.get("dt_txt") == forecast_time_str
+                    ),
+                    None,
+                )
 
-                        if existing_index is not None:
-                            _LOGGER.debug("Replacing block for %s", forecast_time_str)
-                            self._cache_forecast[existing_index] = item
-                        else:
-                            _LOGGER.debug("Appending item %s to _cache_forecast", forecast_time_str)
-                            self._cache_forecast.append(item)
+                if existing_index is not None:
+                    _LOGGER.debug("Replacing block for %s", forecast_time_str)
+                    self._cache_forecast[existing_index] = item
+                else:
+                    _LOGGER.debug("Appending item %s to _cache_forecast", forecast_time_str)
+                    self._cache_forecast.append(item)
 
-                    self._last_forecast_fetch_time = now
+            self._last_forecast_fetch_time = now
 
-                except Exception as exc:  # pylint: disable=broad-except
-                    _LOGGER.error(
-                        "Error processing Forecast Weather data: JSON format invalid!",
-                        exc_info=True,
-                    )
+        except Exception as exc:  # pylint: disable=broad-except
+            _LOGGER.error("Error processing Forecast Weather data: %s", exc)
 
-                    if not self._cache_forecast:
-                        self._cache_forecast = temp_cache
+            if not self._cache_forecast:
+                self._cache_forecast = temp_cache
 
-                    raise APIConnectionError(
-                        "Error processing Forecast Weather data: JSON format invalid!"
-                    ) from exc
+            raise APIConnectionError(
+                f"Error processing Forecast Weather data: {exc}"
+            ) from exc
 
         _LOGGER.debug("self._cache_forecast=%s", self._cache_forecast)
         return self._cache_forecast
@@ -186,8 +216,7 @@ class OpenWeatherMapProvider:
         today_str = now.strftime("%Y-%m-%d")
         current_hour = now.hour
 
-        block_hours = [h for h in range(0, 21, 3)]
-        current_block = max([h for h in block_hours if h <= current_hour])
+        current_block = max([h for h in FORECAST_BLOCK_HOURS if h <= current_hour])
 
         relevant_forecasts = []
         for item in forecast:
