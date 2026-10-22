@@ -1,13 +1,15 @@
 """Regression scenarios based on overlapping sessions and unavailable controllers."""
 import asyncio
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import ha_stub
+from homeassistant.util import dt as dt_util
+from custom_components.smart_water_controller.errors import APIConnectionError
 from custom_components.smart_water_controller.runtime import irrigation_runner as runtime
 from custom_components.smart_water_controller.runtime.active_irrigation import ActiveIrrigationState
 from custom_components.smart_water_controller.runtime.storage import IrrigationStorage, PersistentIrrigationState
@@ -32,6 +34,7 @@ class FakeAPI:
         self.confirm_off = True
         self.global_off = True
         self.on_gate = None
+        self.fail_controller_on = False
 
     async def turn_on_station_switch(self, station, minutes=None):
         self.commands.append(('on', station, minutes))
@@ -60,6 +63,18 @@ class FakeAPI:
     async def stop_sprinkle(self):
         self.commands.append(('service_off',))
 
+    async def turn_on(self):
+        # The real API has had this since 1.0: the service-mode path sends it
+        # before the first watering of a run, because the controller
+        # acknowledges a sprinkle even when its master switch is off and then
+        # does not water. Recorded so a test can assert it is sent once.
+        self.commands.append(('controller_on',))
+        if self.fail_controller_on:
+            raise APIConnectionError('controller unreachable')
+
+    async def turn_off(self):
+        self.commands.append(('controller_off',))
+
 
 class Coordinator:
     def __init__(self, switch=True):
@@ -81,6 +96,10 @@ class Coordinator:
         self.last_sprinkle = datetime(2026, 10, 19, tzinfo=timezone.utc)
         self.last_rain = self.last_sprinkle
         self.soil_moisture_sensor = None
+        # The real coordinator has had this all along - turn_controller_on()
+        # writes controller.state - but no test reached that path, so the fake
+        # never needed it. The service-mode start does now.
+        self.controller = SimpleNamespace(state='On', device_id='controller')
         self.switch = switch
         self.saved = []
         self.station_switch_tracker = StationSwitchTracker(self)
@@ -346,7 +365,47 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_mode_still_runs_a_single_session(self):
         self.c.switch = False
         self.assertTrue(await self.runner.start_irrigation(1, 5, run_seconds=.02))
-        self.assertEqual(self.c.api.commands, [('service_on', 1, 5), ('service_off',)])
+        self.assertEqual(
+            self.c.api.commands,
+            [('controller_on',), ('service_on', 1, 5), ('service_off',)],
+        )
+
+    async def test_service_mode_turns_the_controller_on_once_per_run(self):
+        """The master switch is sent before the first watering, and only then.
+
+        A Solem controller acknowledges a sprinkle while its master switch is
+        off and then does not water, and the On/Off state held in memory
+        defaults to "On" after a restart, so it cannot answer the question.
+        Sending it before every command instead would mean two BLE connections
+        per command on a link that takes one user at a time.
+        """
+        self.c.switch = False
+        self.assertTrue(await self.runner.start_irrigation(1, 5, run_seconds=.02))
+        self.assertTrue(await self.runner.start_irrigation(2, 5, run_seconds=.02))
+        self.assertEqual(
+            [c for c in self.c.api.commands if c[0] == 'controller_on'],
+            [('controller_on',)],
+        )
+
+    async def test_an_explicit_off_re_arms_the_master_switch(self):
+        """After a deliberate Off, the next start has to switch it on again."""
+        self.c.switch = False
+        self.assertTrue(await self.runner.start_irrigation(1, 5, run_seconds=.02))
+        await self.runner.turn_controller_off()
+        self.assertTrue(await self.runner.start_irrigation(1, 5, run_seconds=.02))
+        self.assertEqual(
+            [c for c in self.c.api.commands if c[0].startswith('controller_')],
+            [('controller_on',), ('controller_off',), ('controller_on',)],
+        )
+
+    async def test_a_failed_master_switch_still_waters(self):
+        """It may well be on already; refusing to water is the worse outcome."""
+        self.c.switch = False
+        self.c.api.fail_controller_on = True
+        self.assertTrue(await self.runner.start_irrigation(1, 5, run_seconds=.02))
+        self.assertIn(('service_on', 1, 5), self.c.api.commands)
+        # Not latched by a failure: the next run tries again.
+        self.assertFalse(self.runner._controller_on_confirmed)
 
     async def test_stop_abandons_rest_of_scheduled_sequence(self):
         async def short_start(*args, **kwargs):
@@ -461,6 +520,99 @@ class APITests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(Exception):
                 await api.turn_off_all_station_switches()
         self.assertEqual(calls, ['switch.zone_1', 'switch.zone_2'])
+
+
+class ScheduleControlTests(unittest.IsolatedAsyncioTestCase):
+    """A stored schedule has to be inspectable and clearable from the UI.
+
+    The schedule lives in this integration's storage, not in the card that
+    wrote it, so deleting the card leaves a plan running with no way to stop
+    it. That happened: a leftover slot watered a garden on its own.
+    """
+
+    def setUp(self):
+        self.c = Coordinator()
+        self.c.forecasted_sprinkle_today = [0., 0., 0.]
+        self.c.remaining_sprinkle_today = [0., 0., 0.]
+        self.c.last_rain = None
+        self.c.last_sprinkle = None
+        empty = {'hours': [], 'stations': {f'station_{i}_minutes': 0 for i in range(1, 4)},
+                 'interval_days': 0}
+        self.c.schedule = [deepcopy(empty) for _ in range(12)]
+        self.c.schedule[5] = {'hours': ['07:00:00'], 'interval_days': 2,
+                              'stations': {f'station_{i}_minutes': 10 for i in range(1, 4)}}
+        self.c.schedule[8] = {'hours': ['11:44:00'], 'interval_days': 0,
+                              'stations': {f'station_{i}_minutes': 1 for i in range(1, 4)}}
+        self.manager = ScheduleStateManager(self.c)
+
+    async def test_clearing_one_month_leaves_the_others_alone(self):
+        """The one that matters: getting this wrong costs a season of work."""
+        june = deepcopy(self.c.schedule[5])
+        await self.manager.clear_schedule(month=9)
+        self.assertEqual(self.c.schedule[8]['hours'], [])
+        self.assertEqual(self.c.schedule[5], june)
+
+    async def test_clearing_everything_keeps_twelve_editable_months(self):
+        await self.manager.clear_schedule()
+        self.assertEqual(len(self.c.schedule), 12)
+        self.assertTrue(all(month['hours'] == [] for month in self.c.schedule))
+        # The station keys survive, so the card can still edit a cleared month
+        # instead of showing a section with no rows.
+        self.assertEqual(sorted(self.c.schedule[0]['stations']),
+                         ['station_1_minutes', 'station_2_minutes', 'station_3_minutes'])
+
+    async def test_a_cleared_schedule_is_persisted_and_rescheduled(self):
+        """Clearing has to reach the disk and recompute the next run.
+
+        A clear that only changed memory would come back at the next restart,
+        which is the failure the service exists to prevent.
+        """
+        saves = len(self.c.saved)
+        with patch.object(self.c, 'check_and_schedule_watering') as rescheduled:
+            await self.manager.clear_schedule()
+        self.assertGreater(len(self.c.saved), saves)
+        rescheduled.assert_called_once()
+
+    def test_an_event_today_does_not_block_today(self):
+        """Watering today must not make today look "too soon" for today."""
+        self.c.last_sprinkle = dt_util.now()
+        self.assertFalse(self.manager.recent_event_blocks_today(2))
+
+    def test_an_event_yesterday_blocks_a_two_day_interval(self):
+        self.c.last_rain = dt_util.now() - timedelta(days=1)
+        self.assertTrue(self.manager.recent_event_blocks_today(2))
+        # ...and the interval is counted from the later of the two events, so
+        # rain resets it: an older sprinkle cannot un-block the day.
+        self.c.last_sprinkle = dt_util.now() - timedelta(days=9)
+        self.assertTrue(self.manager.recent_event_blocks_today(2))
+
+    def test_no_previous_event_never_blocks(self):
+        """A clean install used to come up blocked for the whole interval."""
+        self.assertFalse(self.manager.recent_event_blocks_today(7))
+
+
+class ForecastWindowTests(unittest.TestCase):
+    """The forecast has to cover the whole day, 21:00-24:00 included."""
+
+    def test_the_blocks_cover_twenty_four_hours(self):
+        from custom_components.smart_water_controller.weather_providers.common import (
+            FORECAST_BLOCK_HOURS,
+        )
+        self.assertEqual(FORECAST_BLOCK_HOURS, [0, 3, 6, 9, 12, 15, 18, 21])
+
+    def test_the_last_block_of_the_day_is_asked_for(self):
+        """range(0, 21, 3) left out 21:00-24:00, so evening rain never counted.
+
+        The count asked of the API is "every block of today that has not
+        started yet, plus tomorrow's 00h", so at hour 21 it must still be 2 and
+        not 1.
+        """
+        from custom_components.smart_water_controller.weather_providers.common import (
+            FORECAST_BLOCK_HOURS,
+        )
+        for hour, expected in ((0, 9), (11, 5), (12, 5), (20, 2), (21, 2), (23, 1)):
+            blocks = [h for h in FORECAST_BLOCK_HOURS if h >= hour] + [0]
+            self.assertEqual(len(blocks), expected, f'hour {hour}')
 
 
 if __name__ == '__main__':

@@ -48,6 +48,33 @@ class Store:
 
 
 module('homeassistant.helpers.storage', Store=Store)
+module('homeassistant.helpers.aiohttp_client', async_get_clientsession=lambda hass: None)
+
+
+class ClientTimeout:
+    def __init__(self, total=None):
+        self.total = total
+
+
+class ClientSession:
+    """Refuses to be used: no test here is allowed to reach the network."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        raise AssertionError('a test tried to open an HTTP session')
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+# Enough aiohttp for the weather provider modules to be imported. Their pure
+# parts - the forecast block table, the rain-rate conversions - are worth
+# testing; the HTTP call itself is not, and anything that tries it fails loudly
+# rather than reaching out of the test run.
+module('aiohttp', ClientTimeout=ClientTimeout, ClientSession=ClientSession,
+       ClientResponse=object, ClientError=OSError, ClientResponseError=OSError)
 dt = module('homeassistant.util.dt', now=lambda: datetime.now(timezone.utc),
             as_local=lambda value: value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value)
 module('homeassistant.util', dt=dt, slugify=lambda value: value.lower().replace(' ', '_'))
