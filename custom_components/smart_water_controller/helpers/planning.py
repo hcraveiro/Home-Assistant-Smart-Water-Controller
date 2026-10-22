@@ -358,6 +358,17 @@ def calculate_station_slot_irrigation_plan(
 
     minutes_needed = max(0, math.ceil(amount_to_apply_now_mm / mm_per_minute - 1e-9))
 
+    if minutes_needed <= 0:
+        # The ceiling above rounds a real remainder up to a whole minute, so a
+        # genuine shortfall always gets watered. What it leaves behind is float
+        # dust: the applied amount is integrated second by second, so finishing
+        # a slot typically ends on something like 1e-10 mm outstanding, which
+        # the epsilon correctly declines to water but which still reads as a
+        # positive amount to the caller. Reporting it as zero keeps the two
+        # halves of the answer consistent, so nobody has to decide which of
+        # "0 minutes" and "some millimetres" to believe.
+        amount_to_apply_now_mm = 0.0
+
     return StationSlotIrrigationPlan(
         station_id=station_id,
         minutes_needed=minutes_needed,
