@@ -82,7 +82,7 @@ class OpenWeatherMapProvider:
         weather_url = (
             f"{OPEN_WEATHER_MAP_CURRENT_URL}appid={self.api_key}&lat={self.latitude}&lon={self.longitude}"
         )
-        _LOGGER.debug("Getting current weather at : %s", weather_url)
+        _LOGGER.debug("Getting OpenWeatherMap current weather")
 
         data = await fetch_json(weather_url, "Current Weather data", hass=self.hass)
         _LOGGER.debug("Current Weather Data: %s", data)
@@ -165,7 +165,7 @@ class OpenWeatherMapProvider:
         weather_url = (
             f"{OPEN_WEATHER_MAP_FORECAST_URL}&appid={self.api_key}&lat={self.latitude}&lon={self.longitude}&cnt={items}"
         )
-        _LOGGER.debug("Getting forecast at: %s", weather_url)
+        _LOGGER.debug("Getting OpenWeatherMap forecast (%s blocks)", items)
 
         if self._cache_forecast is None:
             self._cache_forecast = []
