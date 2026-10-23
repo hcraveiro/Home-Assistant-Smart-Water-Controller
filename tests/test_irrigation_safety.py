@@ -623,6 +623,53 @@ class ScheduleControlTests(unittest.IsolatedAsyncioTestCase):
         self.c.last_sprinkle = dt_util.now() - timedelta(days=9)
         self.assertTrue(self.manager.recent_event_blocks_today(2))
 
+    def test_interval_boundary_allows_watering_on_exact_day(self):
+        now = datetime(2026, 10, 23, 12, tzinfo=timezone.utc)
+        with patch.object(ha_stub.dt, 'now', return_value=now):
+            self.c.last_rain = now - timedelta(days=2)
+            self.c.last_sprinkle = None
+            self.assertFalse(self.manager.recent_event_blocks_today(2))
+
+    def test_previous_day_event_blocks_two_day_interval(self):
+        now = datetime(2026, 10, 23, 12, tzinfo=timezone.utc)
+        with patch.object(ha_stub.dt, 'now', return_value=now):
+            self.c.last_rain = now - timedelta(days=1)
+            self.c.last_sprinkle = None
+            self.assertTrue(self.manager.recent_event_blocks_today(2))
+
+    def test_latest_event_wins_across_month_boundary(self):
+        now = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
+        with patch.object(ha_stub.dt, 'now', return_value=now):
+            self.c.last_sprinkle = datetime(2026, 10, 25, tzinfo=timezone.utc)
+            self.c.last_rain = datetime(2026, 10, 31, tzinfo=timezone.utc)
+            self.assertEqual(
+                self.manager.latest_rain_or_sprinkle_event(), self.c.last_rain
+            )
+            self.assertTrue(self.manager.recent_event_blocks_today(2))
+
+    async def test_next_watering_skips_unconfigured_month(self):
+        now = datetime(2026, 10, 31, 20, tzinfo=timezone.utc)
+        self.c.last_rain = None
+        self.c.last_sprinkle = None
+        self.c.schedule[9]['hours'] = []
+        self.c.schedule[10]['hours'] = []
+        self.c.schedule[11]['hours'] = ['07:00:00']
+        with patch.object(ha_stub.dt, 'now', return_value=now):
+            result = await self.manager.get_next_watering_date()
+        self.assertEqual(result.date(), datetime(2026, 12, 1).date())
+
+    async def test_next_watering_uses_future_slot_today(self):
+        now = datetime(2026, 6, 15, 6, tzinfo=timezone.utc)
+        self.c.last_rain = None
+        self.c.last_sprinkle = None
+        self.c.sprinkle_target_amount_today = [4.2, 0, 0]
+        self.c.sprinkle_total_amount_today = [0, 0, 0]
+        self.c.rain_total_amount_forecasted_today = 0
+        with patch.object(ha_stub.dt, 'now', return_value=now):
+            result = await self.manager.get_next_watering_date()
+        self.assertEqual(result.hour, 7)
+        self.assertEqual(result.date(), now.date())
+
     def test_no_previous_event_never_blocks(self):
         """A clean install used to come up blocked for the whole interval."""
         self.assertFalse(self.manager.recent_event_blocks_today(7))
