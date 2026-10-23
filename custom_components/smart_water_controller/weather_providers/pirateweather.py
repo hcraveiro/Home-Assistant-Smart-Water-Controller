@@ -11,13 +11,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import aiohttp
-
+from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from homeassistant.util.dt import as_local
 
 from ..const import PIRATE_WEATHER_URL
 from ..errors import APIConnectionError
+from .common import FORECAST_BLOCK_HOURS, fetch_json
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,21 +34,54 @@ class PirateWeatherProvider:
         - rain: {"3h": mm_in_block}
     """
 
-    def __init__(self, api_key: str, latitude: str, longitude: str, timeout: int) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        latitude: str,
+        longitude: str,
+        timeout: int,
+        hass: HomeAssistant | None = None,
+    ) -> None:
         self.api_key = api_key
         self.latitude = latitude
         self.longitude = longitude
         self.timeout = timeout
+        self.hass = hass
 
         self._cache_current: dict[str, Any] | None = None
         self._cache_forecast: list[dict[str, Any]] | None = None
         self._last_current_fetch_time = None
         self._last_forecast_fetch_time = None
         self.last_forecast_date = dt_util.now().date()
+        self._rate_limited_until = None
+
+    def restore_cache(
+        self,
+        *,
+        forecast: list[dict[str, Any]] | None,
+        current: dict[str, Any] | None,
+    ) -> None:
+        """Restore caches persisted by the coordinator across restarts."""
+        if forecast:
+            self._cache_forecast = list(forecast)
+
+        if current:
+            self._cache_current = dict(current)
 
     def _build_url(self) -> str:
         # PirateWeather uses: /forecast/<APIKEY>/<lat>,<lon>?units=si
         return f"{PIRATE_WEATHER_URL}{self.api_key}/{self.latitude},{self.longitude}?units=si"
+
+    def _check_rate_limit(self) -> None:
+        """Skip requests during the cooldown imposed after HTTP 429."""
+        if self._rate_limited_until and dt_util.now() < self._rate_limited_until:
+            raise APIConnectionError("PirateWeather HTTP 429 cooldown active")
+
+    def _record_rate_limit(self, error: Exception) -> None:
+        """Apply a shared cooldown to current and forecast requests."""
+        if "HTTP 429" in str(error):
+            self._rate_limited_until = dt_util.now() + timedelta(minutes=30)
+            _LOGGER.warning("PirateWeather rate limited; pausing API requests for 30 minutes")
 
     async def get_current_weather(self) -> Any:
         now = dt_util.now()
@@ -61,43 +94,50 @@ class PirateWeatherProvider:
             _LOGGER.debug("Returning cached current data.")
             return self._cache_current
 
-        url = self._build_url()
-        _LOGGER.debug("Getting PirateWeather current at: %s", url)
+        self._check_rate_limit()
+        _LOGGER.debug("Getting PirateWeather current weather")
+        try:
+            data = await fetch_json(self._build_url(), "PirateWeather current data", hass=self.hass)
+        except APIConnectionError as exc:
+            self._record_rate_limit(exc)
+            raise
+        _LOGGER.debug("PirateWeather raw data: %s", data)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                try:
-                    data = await response.json()
-                    _LOGGER.debug("PirateWeather raw data: %s", data)
+        # Normalise similar to OWM: store a local dt_txt for 'currently.time'
+        currently = data.get("currently") or {}
+        if "time" in currently:
+            utc_dt = datetime.fromtimestamp(currently["time"], tz=timezone.utc)
+            local_dt = as_local(utc_dt)
+            currently["dt_txt"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-                    # Normalise similar to OWM: store a local dt_txt for 'currently.time'
-                    currently = data.get("currently") or {}
-                    if "time" in currently:
-                        utc_dt = datetime.fromtimestamp(currently["time"], tz=timezone.utc)
-                        local_dt = as_local(utc_dt)
-                        currently["dt_txt"] = local_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-                    self._cache_current = data
-                    self._last_current_fetch_time = now
-                except Exception as exc:  # pylint: disable=broad-except
-                    _LOGGER.error("Error processing PirateWeather current JSON!", exc_info=True)
-                    raise APIConnectionError(
-                        "Error processing PirateWeather current JSON!"
-                    ) from exc
+        self._cache_current = data
+        self._last_current_fetch_time = now
 
         return self._cache_current
 
     async def is_raining(self) -> dict:
         data = await self.get_current_weather()
-        currently = data.get("currently") or {}
 
         # Dark Sky style:
         # - precipIntensity is in mm/h in SI units
         # - consider raining if intensity > 0
-        intensity = float(currently.get("precipIntensity") or 0.0)
-        is_raining = intensity > 0.0
+        intensity = self._current_rain_rate(data)
 
-        return {"is_raining": is_raining, "current": data}
+        return {
+            "is_raining": intensity > 0.0,
+            "current": data,
+            "rain_rate_mm_per_hour": intensity,
+        }
+
+    @staticmethod
+    def _current_rain_rate(payload: dict[str, Any] | None) -> float:
+        """Return the current precipitation rate in mm/h."""
+        currently = (payload or {}).get("currently") or {}
+
+        try:
+            return float(currently.get("precipIntensity") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     async def get_forecast(self) -> list:
         """Return forecast blocks for today in 3-hour buckets.
@@ -125,31 +165,28 @@ class PirateWeatherProvider:
             self._cache_forecast = []
             self.last_forecast_date = now.date()
 
-        url = self._build_url()
-        _LOGGER.debug("Getting PirateWeather forecast at: %s", url)
+        self._check_rate_limit()
+        _LOGGER.debug("Getting PirateWeather forecast")
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                try:
-                    data = await response.json()
-                    hourly = (data.get("hourly") or {}).get("data") or []
-                except Exception as exc:  # pylint: disable=broad-except
-                    _LOGGER.error("Error processing PirateWeather forecast JSON!", exc_info=True)
-                    if not self._cache_forecast:
-                        self._cache_forecast = temp_cache
-                    raise APIConnectionError(
-                        "Error processing PirateWeather forecast JSON!"
-                    ) from exc
+        try:
+            data = await fetch_json(self._build_url(), "PirateWeather forecast data", hass=self.hass)
+            hourly = (data.get("hourly") or {}).get("data") or []
+        except Exception as exc:  # pylint: disable=broad-except
+            self._record_rate_limit(exc)
+            _LOGGER.error("Error processing PirateWeather forecast: %s", exc)
+            if not self._cache_forecast:
+                self._cache_forecast = temp_cache
+            raise APIConnectionError(
+                f"Error processing PirateWeather forecast: {exc}"
+            ) from exc
 
         today = now.date()
         # We build blocks for 00,03,...,21 for *today*.
-        block_starts = [0, 3, 6, 9, 12, 15, 18, 21]
+        block_starts = FORECAST_BLOCK_HOURS
 
         blocks: list[dict[str, Any]] = []
         for start_hour in block_starts:
-            block_start_local = dt_util.now().replace(hour=start_hour, minute=0, second=0, microsecond=0)
-            # Ensure block_start_local refers to today
-            block_start_local = block_start_local.replace(year=today.year, month=today.month, day=today.day)
+            block_start_local = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
             block_end_local = block_start_local + timedelta(hours=3)
 
             # Collect hourly items that overlap this block and are for today

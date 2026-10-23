@@ -28,6 +28,20 @@ WEATHER_API_CACHE_TIMEOUT = "weather_api_cache_timeout"
 WEATHER_API_CACHE_MIN_TIMEOUT = 1
 WEATHER_API_CACHE_DEFAULT_TIMEOUT = 5
 
+# Timeout (in seconds) for a single HTTP request to a weather provider. Without
+# it a hanging provider would stall the coordinator poll indefinitely.
+WEATHER_REQUEST_TIMEOUT = 30
+
+# Rain accumulated today (mm) before rain counts as a real watering event that
+# can postpone the next days through the schedule "interval_days" rule. Without
+# a threshold a few minutes of drizzle suppressed watering for days.
+MIN_SIGNIFICANT_RAIN_MM = 1.0
+
+# Cap applied to the elapsed time used to integrate the current rain rate,
+# expressed as a multiple of the poll interval. Protects the daily rain total
+# from long gaps (restart, suspended host) counting as continuous rain.
+MAX_RAIN_SAMPLE_INTERVAL_FACTOR = 2
+
 # -----------------------------------------------------------------------------
 # Irrigation control method
 # -----------------------------------------------------------------------------

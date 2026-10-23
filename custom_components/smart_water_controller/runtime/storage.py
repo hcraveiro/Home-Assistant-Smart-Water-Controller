@@ -1,9 +1,10 @@
-"""Persistent storage helpers for Smart Water Controller."""
+﻿"""Persistent storage helpers for Smart Water Controller."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 import logging
 from typing import Any, Callable
 
@@ -28,8 +29,10 @@ class PersistentIrrigationState:
     is_raining_now_json: dict[str, Any] = field(default_factory=dict)
 
     last_reset: datetime = field(default_factory=dt_util.now)
-    last_sprinkle: datetime = field(default_factory=dt_util.now)
-    last_rain: datetime = field(default_factory=dt_util.now)
+    # None means "never happened": a default of "now" would look like a rain or
+    # a sprinkle on install day and block the schedule interval for days.
+    last_sprinkle: datetime | None = None
+    last_rain: datetime | None = None
 
     irrigation_manual_duration: int = 10
     water_flow_rate: list[float] = field(default_factory=list)
@@ -68,6 +71,9 @@ class IrrigationStorage:
         self._num_stations = num_stations
         self._station_name_resolver = station_name_resolver
         self._log_prefix = log_prefix
+        # Serialized snapshot of what is already on disk, so an unchanged state
+        # is not rewritten. See async_save().
+        self._saved_fingerprint: str | None = None
 
     def update_num_stations(self, num_stations: int) -> None:
         """Update the expected number of stations."""
@@ -93,9 +99,29 @@ class IrrigationStorage:
         return state
 
     async def async_save(self, state: PersistentIrrigationState) -> None:
-        """Save persistent state."""
+        """Save persistent state, but only if it actually changed.
+
+        `async_update_all_sensors()` saves on every coordinator poll, i.e. once
+        a minute, and `Store.async_save()` rewrites the JSON file immediately:
+        that was ~1440 writes a day to `.storage` even with the system idle,
+        which is pointless flash wear on an SD card or eMMC installation.
+        Comparing a serialized snapshot instead of the dict itself is
+        deliberate: the payload holds references to the coordinator's live
+        lists and dicts, which are mutated in place, so a stored dict would
+        silently change under us and make an unchanged state look identical
+        when it is not (and vice versa).
+        """
         storage_data = self._state_to_storage(state)
+        fingerprint = _fingerprint(storage_data)
+
+        if fingerprint is not None and fingerprint == self._saved_fingerprint:
+            _LOGGER.debug(
+                "%sPersistent data unchanged, skipping write.", self._log_prefix)
+            return
+
         await self._store.async_save(storage_data)
+        # Only after a successful write: a failed one must be retried.
+        self._saved_fingerprint = fingerprint
         _LOGGER.debug("%sPersistent data saved.", self._log_prefix)
 
     def _default_state(self) -> PersistentIrrigationState:
@@ -107,8 +133,8 @@ class IrrigationStorage:
             is_raining_now=False,
             is_raining_now_json={},
             last_reset=dt_util.now(),
-            last_sprinkle=dt_util.now(),
-            last_rain=dt_util.now(),
+            last_sprinkle=None,
+            last_rain=None,
             irrigation_manual_duration=10,
             water_flow_rate=[12] * self._num_stations,
             rain_time_today=0,
@@ -174,8 +200,8 @@ class IrrigationStorage:
             is_raining_now=bool(storage_data.get("is_raining_now", False)),
             is_raining_now_json=storage_data.get("is_raining_now_json") or {},
             last_reset=_parse_stored_datetime(storage_data.get("last_reset"), dt_util.now()),
-            last_sprinkle=_parse_stored_datetime(storage_data.get("last_sprinkle"), dt_util.now()),
-            last_rain=_parse_stored_datetime(storage_data.get("last_rain"), dt_util.now()),
+            last_sprinkle=_parse_stored_datetime(storage_data.get("last_sprinkle"), None),
+            last_rain=_parse_stored_datetime(storage_data.get("last_rain"), None),
             irrigation_manual_duration=int(storage_data.get("irrigation_manual_duration") or 10),
             water_flow_rate=water_flow_rate,
             rain_time_today=float(storage_data.get("rain_time_today", 0) or 0),
@@ -247,6 +273,19 @@ class IrrigationStorage:
         }
 
 
+def _fingerprint(storage_data: dict[str, Any]) -> str | None:
+    """Return a stable serialization used to detect "nothing changed".
+
+    Returns None if the payload cannot be serialized, which makes the caller
+    fall back to always writing: skipping a save is never worth risking losing
+    a real state change.
+    """
+    try:
+        return json.dumps(storage_data, sort_keys=True, default=str)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return None
+
+
 def _is_valid_list(value: Any, expected_length: int) -> bool:
     """Return True if value is a list with the expected length."""
     return isinstance(value, list) and len(value) == expected_length
@@ -268,10 +307,13 @@ def _get_list(
     return [default_value] * expected_length
 
 
-def _parse_stored_datetime(value: Any, default: datetime) -> datetime:
+def _parse_stored_datetime(value: Any, default: datetime | None) -> datetime | None:
     """Parse a stored datetime."""
     if isinstance(value, datetime):
         return ensure_aware(value)
+
+    if value is None or value == "":
+        return ensure_aware(default)
 
     if isinstance(value, str):
         for parser in (
@@ -289,5 +331,8 @@ def _parse_stored_datetime(value: Any, default: datetime) -> datetime:
 
 
 def _format_datetime(value: datetime | None) -> str:
-    """Format datetime for storage."""
-    return ensure_aware(value or datetime.min).strftime("%Y-%m-%d %H:%M:%S")
+    """Format datetime for storage. An empty string means "never happened"."""
+    if value is None:
+        return ""
+
+    return ensure_aware(value).strftime("%Y-%m-%d %H:%M:%S")

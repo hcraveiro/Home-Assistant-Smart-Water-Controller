@@ -1,4 +1,4 @@
-"""DataUpdateCoordinator for our integration."""
+﻿"""DataUpdateCoordinator for our integration."""
 
 from datetime import datetime, timedelta
 from homeassistant.util import slugify, dt as dt_util
@@ -231,8 +231,11 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.next_schedule: datetime | None = None
     
         self.last_reset = dt_util.now()
-        self.last_rain = dt_util.now()
-        self.last_sprinkle = dt_util.now()
+        # No event yet on a fresh install: defaulting these to "now" invented a
+        # rain and a sprinkle on install day, which then blocked watering for
+        # the whole "interval_days" window through _recent_event_blocks_today().
+        self.last_rain = None
+        self.last_sprinkle = None
     
         self.will_it_rain_today = False
         self.will_it_rain_today_forecast = []
@@ -404,8 +407,8 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             is_raining_now=self.is_raining_now,
             is_raining_now_json=self.is_raining_now_json,
             last_reset=ensure_aware(self.last_reset),
-            last_sprinkle=ensure_aware(self.last_sprinkle or datetime.min),
-            last_rain=ensure_aware(self.last_rain or datetime.min),
+            last_sprinkle=ensure_aware(self.last_sprinkle),
+            last_rain=ensure_aware(self.last_rain),
             irrigation_manual_duration=self.irrigation_manual_duration,
             water_flow_rate=self.water_flow_rate,
             rain_time_today=self.rain_time_today,
@@ -603,12 +606,27 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.rain_time_today = 0
         self.rain_total_amount_today = 0
         self.sprinkle_total_amount_today = [0.0] * self.num_stations
-    
+        self.weather_runtime.reset_daily_state()
+
+        self.rain_total_amount_forecasted_today = 0
+
         if self.weather_api:
-            self.rain_total_amount_forecasted_today = await self.weather_api.get_total_rain_forecast_for_today()
-        else:
-            self.rain_total_amount_forecasted_today = 0
-    
+            # A provider outage must not abort the reset: last_reset is only
+            # updated at the end, so an exception here made every poll replay
+            # the whole reset and keep zeroing today's applied water.
+            try:
+                self.rain_total_amount_forecasted_today = (
+                    await self.weather_api.get_total_rain_forecast_for_today()
+                )
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.warning(
+                    f"{self.controller_mac_address} - Could not read the expected rain "
+                    f"during the daily reset, assuming none: {err}"
+                )
+
+        # Keep the runtime fallback consistent with the forecast fetched during reset.
+        self.weather_runtime.set_forecast_total(self.rain_total_amount_forecasted_today)
+
         self.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts()
     
         self.forecasted_sprinkle_today = [
@@ -682,8 +700,15 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                     f"Skipping reset. Error: {err}"
                 )
     
-        await self.weather_runtime.refresh()
-    
+        try:
+            await self.weather_runtime.refresh()
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.warning(
+                f"{self.controller_mac_address} - Weather refresh failed, continuing with "
+                f"the last known values: {err}",
+                exc_info=True,
+            )
+
         self.forecasted_sprinkle_today = [
             self.calculate_forecasted_sprinkle_today(station_id)
             for station_id in range(1, self.num_stations + 1)
@@ -760,7 +785,12 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         """Replace irrigation schedule from the frontend card."""
         await self.schedule_state.set_schedule(new_schedule)
 
-    
+
+    async def async_clear_schedule(self, month: int | None = None):
+        """Clear the whole schedule, or a single month (1-12)."""
+        await self.schedule_state.clear_schedule(month)
+
+
     async def initialize_schedule(self):
         """Initialize the schedule if not already set."""
         await self.schedule_state.initialize_schedule()

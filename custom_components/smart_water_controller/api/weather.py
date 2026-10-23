@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
+from homeassistant.core import HomeAssistant
+
 from ..const import (
     WEATHER_PROVIDER_NONE,
     WEATHER_PROVIDER_OPENWEATHERMAP,
@@ -23,6 +27,7 @@ class WeatherAPI:
         longitude: str,
         timeout: int,
         provider: str = WEATHER_PROVIDER_OPENWEATHERMAP,
+        hass: HomeAssistant | None = None,
     ) -> None:
         """Initialize the configured weather provider."""
         self._provider_name = (provider or "").strip() or WEATHER_PROVIDER_OPENWEATHERMAP
@@ -32,6 +37,7 @@ class WeatherAPI:
             latitude=latitude,
             longitude=longitude,
             timeout=timeout,
+            hass=hass,
         )
 
     def _load_provider(
@@ -42,6 +48,7 @@ class WeatherAPI:
         latitude: str,
         longitude: str,
         timeout: int,
+        hass: HomeAssistant | None = None,
     ):
         """Return the provider instance for the given provider key."""
         if provider == WEATHER_PROVIDER_NONE:
@@ -53,6 +60,7 @@ class WeatherAPI:
                 latitude=latitude,
                 longitude=longitude,
                 timeout=timeout,
+                hass=hass,
             )
 
         if provider == WEATHER_PROVIDER_PIRATEWEATHER:
@@ -61,9 +69,23 @@ class WeatherAPI:
                 latitude=latitude,
                 longitude=longitude,
                 timeout=timeout,
+                hass=hass,
             )
 
         raise APIConnectionError(f"Unsupported weather provider '{provider}'")
+
+    def restore_cache(
+        self,
+        *,
+        forecast: list[dict[str, Any]] | None,
+        current: dict[str, Any] | None,
+    ) -> None:
+        """Hand persisted caches back to the provider.
+
+        The caches live on the provider, not on this facade: assigning
+        ``weather_api._cache_forecast`` from the outside silently did nothing.
+        """
+        self._provider.restore_cache(forecast=forecast, current=current)
 
     async def get_current_weather(self) -> Any:
         return await self._provider.get_current_weather()

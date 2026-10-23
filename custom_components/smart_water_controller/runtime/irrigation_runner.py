@@ -52,6 +52,9 @@ class IrrigationRunner:
         self._starting_station: int | None = None
         self._start_interrupted = False
         self._unavailable_logged: set[int] = set()
+        # Whether this run has already told the controller to turn on. See the
+        # comment in start_irrigation(); reset by turn_controller_off().
+        self._controller_on_confirmed = False
 
     def _switch_state(self, station: int) -> str | None:
         entity_id = self.coordinator.station_switch_tracker.get_station_switch_entity_id(station)
@@ -469,6 +472,32 @@ class IrrigationRunner:
                         if not await self._confirm_switch(station, STATE_ON) or self._start_interrupted:
                             raise APIConnectionError("Switch did not confirm ON")
                 else:
+                    # A Solem controller only waters when its own master switch
+                    # is on, but it acknowledges a sprinkle over BLE either way:
+                    # ack received, no error, no water. And the On/Off state
+                    # this integration keeps in memory defaults to "On" at every
+                    # Home Assistant restart, so it cannot be used to find out.
+                    #
+                    # So turn_on() goes out once per run before the first
+                    # watering: it is idempotent and harmless if the controller
+                    # is already on. Sending it before every command instead
+                    # would mean two BLE connections per command on a
+                    # single-user link, which is what made commands fail in the
+                    # first place.
+                    if not self._controller_on_confirmed:
+                        try:
+                            await self.coordinator.api.turn_on()
+                        except APIConnectionError as exc:
+                            # Not fatal: the controller may well be on already.
+                            # Watering anyway is the lesser risk, and the log
+                            # says which of the two cases this was.
+                            _LOGGER.warning(
+                                "%s - Could not confirm the controller is on before watering station %s (%s); watering anyway.",
+                                self.coordinator.controller_mac_address, station, exc,
+                            )
+                        else:
+                            self.coordinator.controller.state = "On"
+                            self._controller_on_confirmed = True
                     await self.coordinator.api.sprinkle_station(station, duration)
             except asyncio.CancelledError:
                 await self._stop_locked([station], "start task cancelled")
@@ -576,6 +605,7 @@ class IrrigationRunner:
             return
 
         self.coordinator.controller.state = "On"
+        self._controller_on_confirmed = True
 
         data = await self.coordinator.async_update_all_sensors()
         self.coordinator.async_set_updated_data(data)
@@ -602,6 +632,9 @@ class IrrigationRunner:
             return
 
         self.coordinator.controller.state = "Off"
+        # Re-arm the preventive turn_on: after a deliberate Off, the next
+        # sprinkle has to switch the controller back on or no water comes out.
+        self._controller_on_confirmed = False
 
         data = await self.coordinator.async_update_all_sensors()
         self.coordinator.async_set_updated_data(data)
