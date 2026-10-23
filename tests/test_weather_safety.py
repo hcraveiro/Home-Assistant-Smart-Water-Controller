@@ -61,6 +61,13 @@ class RainSamplingTests(unittest.TestCase):
         self.assertEqual(coordinator.last_rain, previous_rain)
         self.assertEqual(coordinator.rain_total_amount_today, 1.2)
 
+    def test_daily_reset_forecast_cache_preserves_last_successful_value(self):
+        coordinator = make_coordinator()
+        runtime = weather_runtime.WeatherRuntime(coordinator)
+        runtime.reset_daily_state()
+        runtime.set_forecast_total(3.2)
+        self.assertAlmostEqual(runtime._forecast_total_mm, 3.2)
+
     def test_elapsed_time_is_capped(self):
         coordinator = make_coordinator()
         runtime = weather_runtime.WeatherRuntime(coordinator)
