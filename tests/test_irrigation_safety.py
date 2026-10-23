@@ -345,6 +345,43 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(('off', 1), self.c.api.commands)
         self.assertIsNone(self.c.active_irrigation)
 
+    async def test_unknown_switch_during_run_requires_recovery_stop(self):
+        task = await self.start(seconds=.2)
+        self.c.set_state(1, 'unknown')
+        with self.assertLogs(runtime._LOGGER, 'ERROR'):
+            await self.c.station_switch_tracker.sync()
+        self.assertFalse(await task)
+        self.assertEqual(self.c.pending_stop_stations, [1])
+        self.c.set_state(1, 'on')
+        await self.c.station_switch_tracker.sync()
+        self.assertEqual(self.c.get_state(1), 'off')
+        self.assertEqual(self.c.pending_stop_stations, [])
+
+    async def test_new_start_is_blocked_until_pending_stop_recovers(self):
+        self.c.api.fail_off = True
+        with self.assertLogs(runtime._LOGGER, 'ERROR'):
+            self.assertFalse(await self.runner.stop_irrigation())
+        with self.assertLogs(runtime._LOGGER, 'ERROR'):
+            self.assertFalse(await self.runner.start_irrigation(2, 5))
+        self.assertFalse(any(command[0] == 'on' for command in self.c.api.commands))
+        self.c.api.fail_off = False
+        await self.runner.handle_switch_states()
+        self.assertEqual(self.c.pending_stop_stations, [])
+        self.assertTrue(await self.runner.start_irrigation(2, 5, run_seconds=.02))
+
+    async def test_restart_with_missing_switch_keeps_durable_stop(self):
+        self.c.active_irrigation = ActiveIrrigationState.create(
+            station=2, source='automatic', duration_minutes=5,
+            station_name='Zone 2')
+        self.c.hass.states.pop('switch.zone_2')
+        with self.assertLogs(runtime._LOGGER, 'ERROR'):
+            await self.runner.restore_active_irrigation()
+        self.assertIn(2, self.c.pending_stop_stations)
+        self.c.set_state(2, 'on')
+        await self.runner.handle_switch_states()
+        self.assertEqual(self.c.get_state(2), 'off')
+        self.assertNotIn(2, self.c.pending_stop_stations)
+
     async def test_unload_cancels_workers_and_retry(self):
         task = await self.start(seconds=.2)
         await self.runner.async_close()
