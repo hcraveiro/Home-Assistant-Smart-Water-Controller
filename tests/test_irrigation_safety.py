@@ -658,6 +658,20 @@ class ScheduleControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.schedule[8]['hours'], [])
         self.assertEqual(self.c.schedule[5], june)
 
+    async def test_clearing_january_keeps_other_months(self):
+        """A one-based January selection must not wipe the full year."""
+        january = {"hours": ["06:30:00"], "interval_days": 2,
+                   "stations": {"station_1_minutes": 4,
+                                "station_2_minutes": 0, "station_3_minutes": 0}}
+        self.c.schedule[0] = deepcopy(january)
+        june = deepcopy(self.c.schedule[5])
+        september = deepcopy(self.c.schedule[8])
+        await self.manager.clear_schedule(month=1)
+        self.assertEqual(self.c.schedule[0]["hours"], [])
+        self.assertEqual(self.c.schedule[5], june)
+        self.assertEqual(self.c.schedule[8], september)
+        self.assertEqual(len(self.c.schedule), 12)
+
     async def test_clearing_everything_keeps_twelve_editable_months(self):
         await self.manager.clear_schedule()
         self.assertEqual(len(self.c.schedule), 12)
