@@ -220,6 +220,28 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(self.c.current_irrigation)
             self.assertEqual(self.c.stations[0].state, 'Unavailable')
 
+    async def test_all_zones_must_be_available_before_start(self):
+        """An unrelated unavailable valve must prevent opening any valve."""
+        self.c.set_state(3, "unavailable")
+        with self.assertLogs(runtime._LOGGER, "ERROR"):
+            self.assertFalse(await self.runner.start_irrigation(1, 5))
+        self.assertFalse(any(command[0] == "on" for command in self.c.api.commands))
+        self.assertEqual(self.c.total_water_consumption, 0)
+
+    async def test_failed_off_prevents_restarting_until_recovery(self):
+        """A failed stop must never permit a second valve to open."""
+        first = await self.start(seconds=.2)
+        self.c.api.fail_off = True
+        with self.assertLogs(runtime._LOGGER, "ERROR"):
+            self.assertFalse(await self.runner.stop_irrigation())
+        self.assertFalse(await first)
+        with self.assertLogs(runtime._LOGGER, "ERROR"):
+            self.assertFalse(await self.runner.start_irrigation(2, 5))
+        self.assertFalse(any(c[0] == "on" and c[1] == 2 for c in self.c.api.commands))
+        self.c.api.fail_off = False
+        await self.runner.handle_switch_states()
+        self.assertEqual(self.c.pending_stop_stations, [])
+
     async def test_on_acknowledgement_is_required(self):
         self.c.api.confirm_on = False
         with self.assertLogs(runtime._LOGGER, 'ERROR'):
