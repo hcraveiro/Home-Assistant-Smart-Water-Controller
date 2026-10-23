@@ -3,10 +3,12 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
+import logging
 from unittest.mock import patch
 
 import ha_stub  # noqa: F401 - installs minimal Home Assistant interfaces
 from custom_components.smart_water_controller.runtime import weather_runtime
+from custom_components.smart_water_controller.errors import APIConnectionError
 
 
 class BrokenWeatherAPI:
@@ -38,6 +40,21 @@ def make_coordinator(api=None):
 
 
 class RainSamplingTests(unittest.TestCase):
+    def test_pirateweather_cooldown_is_debug_only(self):
+        runtime = weather_runtime.WeatherRuntime(make_coordinator())
+        self.assertEqual(
+            runtime._weather_log_level(APIConnectionError("PirateWeather HTTP 429 cooldown active")),
+            logging.DEBUG,
+        )
+        self.assertEqual(
+            runtime._weather_log_level(APIConnectionError("PirateWeather HTTP 429")),
+            logging.WARNING,
+        )
+        self.assertEqual(
+            runtime._weather_log_level(RuntimeError("provider connection failed")),
+            logging.WARNING,
+        )
+
     def test_first_sample_does_not_invent_elapsed_rain(self):
         coordinator = make_coordinator()
         runtime = weather_runtime.WeatherRuntime(coordinator)
