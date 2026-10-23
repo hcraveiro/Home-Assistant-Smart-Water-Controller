@@ -38,6 +38,7 @@ class WeatherRuntime:
         # samples, so we need to remember when the previous one happened.
         self._last_rain_sample_at: datetime | None = None
         self._rain_rate_mm_per_hour = 0.0
+        self._current_weather_fresh = False
         # Last successfully fetched forecast total, kept so a provider outage
         # does not wipe the expected rain used by the irrigation planner.
         self._forecast_total_mm = 0.0
@@ -117,11 +118,16 @@ class WeatherRuntime:
             self.coordinator.is_raining_now = False
             self.coordinator.is_raining_now_json = {}
             self._rain_rate_mm_per_hour = 0.0
+            self._current_weather_fresh = False
             self._forecast_total_mm = 0.0
 
         self._accumulate_rain(self._elapsed_rain_minutes())
 
-        if self.coordinator.is_raining_now and not self.coordinator.sprinkle_with_rain:
+        if (
+            self._current_weather_fresh
+            and self.coordinator.is_raining_now
+            and not self.coordinator.sprinkle_with_rain
+        ):
             self._stop_irrigation_for_rain()
 
         self.coordinator.rain_total_amount_forecasted_today = (
@@ -136,6 +142,7 @@ class WeatherRuntime:
         entity data set and aborted the post-irrigation state update.
         """
         weather_api = self.coordinator.weather_api
+        self._current_weather_fresh = False
 
         try:
             will_it_rain_result = await weather_api.will_it_rain()
@@ -166,6 +173,7 @@ class WeatherRuntime:
             # integrating instead of extrapolating the last known rate.
             self._rain_rate_mm_per_hour = 0.0
         else:
+            self._current_weather_fresh = True
             self.coordinator.is_raining_now = is_raining_result.get("is_raining", False)
             self.coordinator.is_raining_now_json = (
                 is_raining_result.get("current", {}) or {}
@@ -211,7 +219,8 @@ class WeatherRuntime:
         self._last_rain_sample_at = now
 
         if previous is None:
-            return poll_minutes
+            # No elapsed observation exists yet; do not invent a full interval.
+            return 0.0
 
         elapsed = (now - previous).total_seconds() / 60
 
@@ -234,7 +243,10 @@ class WeatherRuntime:
         # Only meaningful rain counts as a watering event able to postpone the
         # following days through the schedule interval. Any trace of drizzle used
         # to reach this point and block irrigation for "interval_days".
-        if self.coordinator.rain_total_amount_today >= MIN_SIGNIFICANT_RAIN_MM:
+        if (
+            self._rain_rate_mm_per_hour > 0
+            and self.coordinator.rain_total_amount_today >= MIN_SIGNIFICANT_RAIN_MM
+        ):
             self.coordinator.last_rain = dt_util.now()
 
     def _stop_irrigation_for_rain(self) -> None:
