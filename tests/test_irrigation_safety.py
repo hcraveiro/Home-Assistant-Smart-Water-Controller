@@ -469,6 +469,43 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await manual)
         self.assertEqual([c[1] for c in self.c.api.commands if c[0] == 'on'], [1, 3])
 
+    async def test_scheduled_cycle_stops_after_station_connection_loss(self):
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs['run_seconds'] = .2
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, 'start_irrigation', side_effect=short_start):
+            cycle = asyncio.create_task(self.runner.run_watering_cycle('08:00:00'))
+            await self.wait_for(lambda: self.runner._session is not None)
+            self.c.set_state(1, 'unavailable')
+            with self.assertLogs(runtime._LOGGER, 'ERROR'):
+                await self.c.station_switch_tracker.sync()
+            await cycle
+
+        self.assertEqual([c[1] for c in self.c.api.commands if c[0] == 'on'], [1])
+        self.assertIn(1, self.c.pending_stop_stations)
+        self.assertFalse(any(self.c.get_state(i) == 'on' for i in (2, 3)))
+
+    async def test_failed_stop_during_schedule_never_starts_next_station(self):
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs['run_seconds'] = .2
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, 'start_irrigation', side_effect=short_start):
+            cycle = asyncio.create_task(self.runner.run_watering_cycle('08:00:00'))
+            await self.wait_for(lambda: self.runner._session is not None)
+            self.c.api.fail_off = True
+            with self.assertLogs(runtime._LOGGER, 'ERROR'):
+                self.assertFalse(await self.runner.stop_irrigation())
+            await cycle
+
+        self.assertEqual([c[1] for c in self.c.api.commands if c[0] == 'on'], [1])
+        self.assertTrue(self.c.pending_stop_stations)
+
     async def test_duplicate_scheduled_cycles_are_rejected(self):
         task = await self.start(seconds=.03)
         await self.runner.run_watering_cycle('08:00:00')
