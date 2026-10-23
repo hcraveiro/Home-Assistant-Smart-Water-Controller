@@ -19,6 +19,7 @@ from ..const import (
     WEATHER_PROVIDER_NONE,
 )
 from ..weather_providers.common import rain_rate_from_owm_payload
+from ..errors import APIConnectionError
 
 if TYPE_CHECKING:
     from ..coordinator import SmartWaterControllerCoordinator
@@ -138,6 +139,13 @@ class WeatherRuntime:
             self._forecast_total_mm + self.coordinator.rain_total_amount_today
         )
 
+    @staticmethod
+    def _weather_log_level(error: Exception) -> int:
+        """Avoid warning spam while PirateWeather is already cooling down."""
+        if isinstance(error, APIConnectionError) and "PirateWeather HTTP 429 cooldown active" in str(error):
+            return logging.DEBUG
+        return logging.WARNING
+
     async def _refresh_from_provider(self) -> None:
         """Read the provider, keeping the last known values on failure.
 
@@ -151,7 +159,8 @@ class WeatherRuntime:
         try:
             will_it_rain_result = await weather_api.will_it_rain()
         except Exception as err:  # pylint: disable=broad-except
-            _LOGGER.warning(
+            _LOGGER.log(
+                self._weather_log_level(err),
                 "%s - Could not refresh the rain forecast (%s). Keeping the last known values.",
                 self.coordinator.controller_mac_address,
                 err,
@@ -168,7 +177,8 @@ class WeatherRuntime:
         try:
             is_raining_result = await weather_api.is_raining()
         except Exception as err:  # pylint: disable=broad-except
-            _LOGGER.warning(
+            _LOGGER.log(
+                self._weather_log_level(err),
                 "%s - Could not read the current weather (%s). Pausing rain accumulation.",
                 self.coordinator.controller_mac_address,
                 err,
@@ -187,7 +197,8 @@ class WeatherRuntime:
         try:
             self._forecast_total_mm = await weather_api.get_total_rain_forecast_for_today()
         except Exception as err:  # pylint: disable=broad-except
-            _LOGGER.warning(
+            _LOGGER.log(
+                self._weather_log_level(err),
                 "%s - Could not refresh the expected rain for today (%s). "
                 "Keeping the last known value of %.2fmm.",
                 self.coordinator.controller_mac_address,
