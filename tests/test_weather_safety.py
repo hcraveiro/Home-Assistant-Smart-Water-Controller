@@ -71,6 +71,31 @@ class RainSamplingTests(unittest.TestCase):
             self.assertEqual(runtime._elapsed_rain_minutes(), 2.0)
 
 
+    def test_light_drizzle_does_not_reset_watering_interval(self):
+        coordinator = make_coordinator()
+        coordinator.is_raining_now = True
+        runtime = weather_runtime.WeatherRuntime(coordinator)
+        runtime._rain_rate_mm_per_hour = 0.5
+
+        runtime._accumulate_rain(30.0)
+
+        self.assertAlmostEqual(coordinator.rain_total_amount_today, 0.25)
+        self.assertIsNone(coordinator.last_rain)
+
+    def test_significant_rain_updates_last_rain(self):
+        coordinator = make_coordinator()
+        coordinator.is_raining_now = True
+        runtime = weather_runtime.WeatherRuntime(coordinator)
+        runtime._rain_rate_mm_per_hour = 2.0
+        fixed_time = datetime(2026, 10, 23, 8, tzinfo=timezone.utc)
+
+        with patch.object(weather_runtime.dt_util, "now", return_value=fixed_time):
+            runtime._accumulate_rain(30.0)
+
+        self.assertAlmostEqual(coordinator.rain_total_amount_today, 1.0)
+        self.assertEqual(coordinator.last_rain, fixed_time)
+
+
 class ProviderFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_rain_does_not_stop_active_irrigation(self):
         coordinator = make_coordinator(BrokenWeatherAPI())
