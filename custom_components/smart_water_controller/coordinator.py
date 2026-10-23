@@ -624,6 +624,11 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                     f"during the daily reset, assuming none: {err}"
                 )
 
+        # Keep the runtime fallback consistent with the forecast fetched during reset.
+        self.weather_runtime._forecast_total_mm = max(
+            0.0, float(self.rain_total_amount_forecasted_today or 0)
+        )
+
         self.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts()
     
         self.forecasted_sprinkle_today = [
