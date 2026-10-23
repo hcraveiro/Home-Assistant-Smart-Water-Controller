@@ -108,6 +108,10 @@ class WeatherRuntime:
         """Forget the cached forecast total at the daily reset."""
         self._forecast_total_mm = 0.0
 
+    def set_forecast_total(self, total_mm: float) -> None:
+        """Record a successfully fetched daily forecast for outage fallback."""
+        self._forecast_total_mm = max(0.0, float(total_mm or 0))
+
     async def refresh(self) -> None:
         """Refresh weather-related runtime state."""
         if self.coordinator.weather_api:
