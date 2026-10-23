@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import ha_stub  # noqa: F401
 from custom_components.smart_water_controller.errors import APIConnectionError
-from custom_components.smart_water_controller.weather_providers import common
+from custom_components.smart_water_controller.weather_providers import common, pirateweather, owm
 
 
 class FakeResponse:
@@ -111,6 +111,31 @@ class WeatherRainUnitsTests(unittest.TestCase):
         self.assertEqual(common.rain_rate_from_owm_payload(None), 0.0)
         self.assertEqual(common.rain_rate_from_owm_payload({}), 0.0)
 
+
+
+class RateLimitAndCredentialTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pirateweather_throttles_after_429_for_both_paths(self):
+        provider = pirateweather.PirateWeatherProvider("SECRET-PIRATE-KEY", "38", "-8", 5)
+        with patch.object(pirateweather, "fetch_json", side_effect=APIConnectionError("HTTP 429")) as fetch:
+            with self.assertRaises(APIConnectionError):
+                await provider.get_current_weather()
+            with self.assertRaisesRegex(APIConnectionError, "cooldown"):
+                await provider.get_forecast()
+            self.assertEqual(fetch.call_count, 1)
+
+    async def test_pirateweather_does_not_log_secret_url(self):
+        provider = pirateweather.PirateWeatherProvider("SECRET-PIRATE-KEY", "38", "-8", 5)
+        with patch.object(pirateweather, "fetch_json", return_value={"currently": {}}):
+            with self.assertLogs(pirateweather._LOGGER, "DEBUG") as logs:
+                await provider.get_current_weather()
+        self.assertNotIn("SECRET-PIRATE-KEY", " ".join(logs.output))
+
+    async def test_openweathermap_does_not_log_secret_url(self):
+        provider = owm.OpenWeatherMapProvider("SECRET-OWM-KEY", "38", "-8", 5)
+        with patch.object(owm, "fetch_json", return_value={"weather": []}):
+            with self.assertLogs(owm._LOGGER, "DEBUG") as logs:
+                await provider.get_current_weather()
+        self.assertNotIn("SECRET-OWM-KEY", " ".join(logs.output))
 
 if __name__ == "__main__":
     unittest.main()
