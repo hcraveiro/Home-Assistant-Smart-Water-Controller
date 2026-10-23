@@ -29,7 +29,7 @@ for name, path in [
 
 module('homeassistant', __path__=[])
 module('homeassistant.core', HomeAssistant=object, callback=lambda fn: fn)
-module('homeassistant.const', STATE_ON='on', STATE_OFF='off')
+module('homeassistant.const', STATE_ON='on', STATE_OFF='off', CONF_SENSORS='sensors')
 module('homeassistant.exceptions', HomeAssistantError=RuntimeError)
 module('homeassistant.helpers', __path__=[])
 module('homeassistant.helpers.event', async_track_state_change_event=lambda *args: lambda: None)
