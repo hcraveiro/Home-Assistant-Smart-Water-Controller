@@ -180,6 +180,16 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c for c in self.c.api.commands if c[0] == 'off'],
                          [('off', 1), ('off', 2), ('off', 3)])
 
+    async def test_scheduled_irrigation_updates_last_sprinkle(self):
+        """Scheduled watering must update the same timestamp as manual watering."""
+        previous = self.c.last_sprinkle
+        self.assertTrue(await self.runner.start_irrigation(
+            1, 5, run_seconds=.035, source="automatic"
+        ))
+        self.assertIsNotNone(self.c.last_sprinkle)
+        self.assertGreater(self.c.last_sprinkle, previous)
+        self.assertGreater(self.c.sprinkle_total_amount_today[0], 0)
+
     async def test_replacing_same_zone_cannot_stop_new_session(self):
         old = await self.start(seconds=.04)
         await asyncio.sleep(.01)
