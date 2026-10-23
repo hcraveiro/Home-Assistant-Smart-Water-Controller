@@ -94,10 +94,13 @@ class PirateWeatherProvider:
             _LOGGER.debug("Returning cached current data.")
             return self._cache_current
 
-        url = self._build_url()
-        _LOGGER.debug("Getting PirateWeather current at: %s", url)
-
-        data = await fetch_json(url, "PirateWeather current data", hass=self.hass)
+        self._check_rate_limit()
+        _LOGGER.debug("Getting PirateWeather current weather")
+        try:
+            data = await fetch_json(self._build_url(), "PirateWeather current data", hass=self.hass)
+        except APIConnectionError as exc:
+            self._record_rate_limit(exc)
+            raise
         _LOGGER.debug("PirateWeather raw data: %s", data)
 
         # Normalise similar to OWM: store a local dt_txt for 'currently.time'
@@ -162,13 +165,14 @@ class PirateWeatherProvider:
             self._cache_forecast = []
             self.last_forecast_date = now.date()
 
-        url = self._build_url()
-        _LOGGER.debug("Getting PirateWeather forecast at: %s", url)
+        self._check_rate_limit()
+        _LOGGER.debug("Getting PirateWeather forecast")
 
         try:
             data = await fetch_json(self._build_url(), "PirateWeather forecast data", hass=self.hass)
             hourly = (data.get("hourly") or {}).get("data") or []
         except Exception as exc:  # pylint: disable=broad-except
+            self._record_rate_limit(exc)
             _LOGGER.error("Error processing PirateWeather forecast: %s", exc)
             if not self._cache_forecast:
                 self._cache_forecast = temp_cache
