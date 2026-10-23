@@ -35,7 +35,7 @@ jobs:
         run: python -m coverage run --source=custom_components.smart_water_controller -m unittest discover -s tests -v
       - name: Report coverage
         run: |
-          python -m coverage report --show-missing
+          python -m coverage report --show-missing --fail-under=50
           python -m coverage xml -o coverage.xml
       - name: Upload coverage report
         if: always()
