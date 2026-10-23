@@ -53,6 +53,7 @@ class PirateWeatherProvider:
         self._last_current_fetch_time = None
         self._last_forecast_fetch_time = None
         self.last_forecast_date = dt_util.now().date()
+        self._rate_limited_until = None
 
     def restore_cache(
         self,
@@ -70,6 +71,17 @@ class PirateWeatherProvider:
     def _build_url(self) -> str:
         # PirateWeather uses: /forecast/<APIKEY>/<lat>,<lon>?units=si
         return f"{PIRATE_WEATHER_URL}{self.api_key}/{self.latitude},{self.longitude}?units=si"
+
+    def _check_rate_limit(self) -> None:
+        """Skip requests during the cooldown imposed after HTTP 429."""
+        if self._rate_limited_until and dt_util.now() < self._rate_limited_until:
+            raise APIConnectionError("PirateWeather HTTP 429 cooldown active")
+
+    def _record_rate_limit(self, error: Exception) -> None:
+        """Apply a shared cooldown to current and forecast requests."""
+        if "HTTP 429" in str(error):
+            self._rate_limited_until = dt_util.now() + timedelta(minutes=30)
+            _LOGGER.warning("PirateWeather rate limited; pausing API requests for 30 minutes")
 
     async def get_current_weather(self) -> Any:
         now = dt_util.now()
@@ -154,7 +166,7 @@ class PirateWeatherProvider:
         _LOGGER.debug("Getting PirateWeather forecast at: %s", url)
 
         try:
-            data = await fetch_json(url, "PirateWeather forecast data", hass=self.hass)
+            data = await fetch_json(self._build_url(), "PirateWeather forecast data", hass=self.hass)
             hourly = (data.get("hourly") or {}).get("data") or []
         except Exception as exc:  # pylint: disable=broad-except
             _LOGGER.error("Error processing PirateWeather forecast: %s", exc)
