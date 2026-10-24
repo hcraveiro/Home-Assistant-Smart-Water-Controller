@@ -143,6 +143,24 @@ class RateLimitAndCredentialTests(unittest.IsolatedAsyncioTestCase):
                     await provider.get_current_weather()
         self.assertEqual(fetch.call_count, 2)
 
+    async def test_current_and_forecast_share_one_http_request(self):
+        provider = pirateweather.PirateWeatherProvider("SECRET", "38", "-8", 5)
+        payload = {"currently": {"precipIntensity": 0}, "hourly": {"data": []}}
+        with patch.object(pirateweather, "fetch_json", return_value=payload) as fetch:
+            await provider.get_current_weather()
+            await provider.get_forecast()
+            await provider.get_total_rain_forecast_for_today()
+            await provider.is_raining()
+        self.assertEqual(fetch.call_count, 1)
+
+    async def test_parallel_current_and_forecast_share_one_http_request(self):
+        import asyncio
+        provider = pirateweather.PirateWeatherProvider("SECRET", "38", "-8", 5)
+        payload = {"currently": {"precipIntensity": 0}, "hourly": {"data": []}}
+        with patch.object(pirateweather, "fetch_json", return_value=payload) as fetch:
+            await asyncio.gather(provider.get_current_weather(), provider.get_forecast())
+        self.assertEqual(fetch.call_count, 1)
+
     async def test_pirateweather_does_not_log_secret_url(self):
         provider = pirateweather.PirateWeatherProvider("SECRET-PIRATE-KEY", "38", "-8", 5)
         with patch.object(pirateweather, "fetch_json", return_value={"currently": {}}):
