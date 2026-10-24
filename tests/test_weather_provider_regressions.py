@@ -161,6 +161,17 @@ class RateLimitAndCredentialTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(provider.get_current_weather(), provider.get_forecast())
         self.assertEqual(fetch.call_count, 1)
 
+    async def test_pirateweather_cooldown_is_not_logged_as_error(self):
+        provider = pirateweather.PirateWeatherProvider("SECRET", "38", "-8", 5)
+        provider._rate_limited_until = pirateweather.dt_util.now() + pirateweather.timedelta(minutes=20)
+        with patch.object(pirateweather, "fetch_json") as fetch:
+            with self.assertLogs(pirateweather._LOGGER, "DEBUG") as logs:
+                with self.assertRaises(APIConnectionError):
+                    await provider.get_forecast()
+        fetch.assert_not_called()
+        self.assertTrue(any("cooldown" in line for line in logs.output))
+        self.assertFalse(any("ERROR:" in line for line in logs.output))
+
     async def test_pirateweather_does_not_log_secret_url(self):
         provider = pirateweather.PirateWeatherProvider("SECRET-PIRATE-KEY", "38", "-8", 5)
         with patch.object(pirateweather, "fetch_json", return_value={"currently": {}}):
