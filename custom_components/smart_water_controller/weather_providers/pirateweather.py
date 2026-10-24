@@ -7,6 +7,7 @@ unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -54,6 +55,9 @@ class PirateWeatherProvider:
         self._last_forecast_fetch_time = None
         self.last_forecast_date = dt_util.now().date()
         self._rate_limited_until = None
+        self._shared_payload = None
+        self._shared_payload_time = None
+        self._request_lock = asyncio.Lock()
 
     def restore_cache(
         self,
@@ -83,24 +87,44 @@ class PirateWeatherProvider:
             self._rate_limited_until = dt_util.now() + timedelta(minutes=30)
             _LOGGER.warning("PirateWeather rate limited; pausing API requests for 30 minutes")
 
+    async def _get_shared_payload(self) -> dict[str, Any]:
+        """Reuse one PirateWeather response for current conditions and forecasts."""
+        async with self._request_lock:
+            now = dt_util.now()
+            cache_minutes = max(15, self.timeout)
+            if (
+                self._shared_payload is not None
+                and self._shared_payload_time is not None
+                and self._shared_payload_time.date() == now.date()
+                and now - self._shared_payload_time < timedelta(minutes=cache_minutes)
+            ):
+                return self._shared_payload
+
+            self._check_rate_limit()
+            try:
+                payload = await fetch_json(
+                    self._build_url(), "PirateWeather data", hass=self.hass
+                )
+            except APIConnectionError as exc:
+                self._record_rate_limit(exc)
+                raise
+
+            self._shared_payload = payload
+            self._shared_payload_time = now
+            return payload
+
     async def get_current_weather(self) -> Any:
         now = dt_util.now()
 
         if (
             self._cache_current
             and self._last_current_fetch_time
-            and now - self._last_current_fetch_time < timedelta(minutes=self.timeout)
+            and now - self._last_current_fetch_time < timedelta(minutes=max(15, self.timeout))
         ):
             _LOGGER.debug("Returning cached current data.")
             return self._cache_current
 
-        self._check_rate_limit()
-        _LOGGER.debug("Getting PirateWeather current weather")
-        try:
-            data = await fetch_json(self._build_url(), "PirateWeather current data", hass=self.hass)
-        except APIConnectionError as exc:
-            self._record_rate_limit(exc)
-            raise
+        data = await self._get_shared_payload()
         _LOGGER.debug("PirateWeather raw data: %s", data)
 
         # Normalise similar to OWM: store a local dt_txt for 'currently.time'
@@ -152,7 +176,8 @@ class PirateWeatherProvider:
         if (
             self._cache_forecast
             and self._last_forecast_fetch_time
-            and now - self._last_forecast_fetch_time < timedelta(minutes=self.timeout)
+            and self._last_forecast_fetch_time.date() == now.date()
+            and now - self._last_forecast_fetch_time < timedelta(minutes=max(15, self.timeout))
         ):
             _LOGGER.debug("Returning cached forecast data.")
             return self._cache_forecast
@@ -165,14 +190,10 @@ class PirateWeatherProvider:
             self._cache_forecast = []
             self.last_forecast_date = now.date()
 
-        self._check_rate_limit()
-        _LOGGER.debug("Getting PirateWeather forecast")
-
         try:
-            data = await fetch_json(self._build_url(), "PirateWeather forecast data", hass=self.hass)
+            data = await self._get_shared_payload()
             hourly = (data.get("hourly") or {}).get("data") or []
         except Exception as exc:  # pylint: disable=broad-except
-            self._record_rate_limit(exc)
             _LOGGER.error("Error processing PirateWeather forecast: %s", exc)
             if not self._cache_forecast:
                 self._cache_forecast = temp_cache
