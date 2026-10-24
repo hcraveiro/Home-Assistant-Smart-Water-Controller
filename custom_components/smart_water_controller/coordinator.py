@@ -607,6 +607,8 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.rain_total_amount_today = 0
         self.sprinkle_total_amount_today = [0.0] * self.num_stations
         self.weather_runtime.reset_daily_state()
+        # A new day needs a new forecast; yesterday's total is not valid today.
+        self.weather_forecast_available = self.weather_api is None
 
         self.rain_total_amount_forecasted_today = 0
 
@@ -618,10 +620,11 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
                 self.rain_total_amount_forecasted_today = (
                     await self.weather_api.get_total_rain_forecast_for_today()
                 )
+                self.weather_forecast_available = True
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.warning(
                     f"{self.controller_mac_address} - Could not read the expected rain "
-                    f"during the daily reset, assuming none: {err}"
+                    f"during the daily reset; automatic watering is paused until recovery: {err}"
                 )
 
         # Keep the runtime fallback consistent with the forecast fetched during reset.
