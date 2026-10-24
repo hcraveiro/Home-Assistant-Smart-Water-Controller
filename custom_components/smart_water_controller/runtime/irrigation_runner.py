@@ -277,6 +277,13 @@ class IrrigationRunner:
                     state.state if state else "None",
                 )
 
+        if self.coordinator.weather_api and not getattr(self.coordinator, "weather_forecast_available", True):
+            _LOGGER.warning(
+                "%s - Scheduled watering skipped: today's weather forecast is unavailable.",
+                self.coordinator.controller_mac_address,
+            )
+            return
+
         if self.coordinator._rain_blocks_watering_now():
             _LOGGER.info(
                 "%s - Watering skipped because it is raining now.",
