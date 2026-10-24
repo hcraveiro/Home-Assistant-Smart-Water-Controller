@@ -43,6 +43,7 @@ class WeatherRuntime:
         # Last successfully fetched forecast total, kept so a provider outage
         # does not wipe the expected rain used by the irrigation planner.
         self._forecast_total_mm = 0.0
+        self.coordinator.weather_forecast_available = False
         self._rain_stop_task: asyncio.Task | None = None
 
     def configure(self) -> None:
@@ -125,6 +126,7 @@ class WeatherRuntime:
             self._rain_rate_mm_per_hour = 0.0
             self._current_weather_fresh = False
             self._forecast_total_mm = 0.0
+            self.coordinator.weather_forecast_available = True
 
         self._accumulate_rain(self._elapsed_rain_minutes())
 
@@ -196,6 +198,7 @@ class WeatherRuntime:
 
         try:
             self._forecast_total_mm = await weather_api.get_total_rain_forecast_for_today()
+            self.coordinator.weather_forecast_available = True
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.log(
                 self._weather_log_level(err),
