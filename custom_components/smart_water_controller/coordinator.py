@@ -624,7 +624,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.warning(
                     f"{self.controller_mac_address} - Could not read the expected rain "
-                    f"during the daily reset; automatic watering is paused until recovery: {err}"
+                    f"during the daily reset; continuing scheduled watering without forecast rain deduction: {err}"
                 )
 
         # Keep the runtime fallback consistent with the forecast fetched during reset.
