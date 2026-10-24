@@ -297,6 +297,29 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c[1] for c in self.c.api.commands if c[0] == 'on'], [1, 2, 3])
         self.assertTrue(all(value > 0 for value in self.c.sprinkle_total_amount_today))
 
+    async def test_missing_daily_forecast_blocks_scheduled_cycle(self):
+        """An API outage after midnight must not be interpreted as no rain."""
+        self.c.weather_api = object()
+        self.c.weather_forecast_available = False
+        with self.assertLogs(runtime._LOGGER, "WARNING") as logs:
+            await self.runner.run_watering_cycle("08:00:00")
+        self.assertIn("forecast is unavailable", " ".join(logs.output))
+        self.assertFalse(any(command[0] == "on" for command in self.c.api.commands))
+
+    async def test_no_weather_provider_still_allows_scheduled_cycle(self):
+        """Users without a configured forecast provider can still irrigate."""
+        self.c.weather_api = None
+        self.c.weather_forecast_available = False
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .02
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+            await self.runner.run_watering_cycle("08:00:00")
+        self.assertEqual([cmd[1] for cmd in self.c.api.commands if cmd[0] == "on"], [1, 2, 3])
+
     async def test_external_off_does_not_keep_counting(self):
         task = await self.start(seconds=.2)
         self.c.set_state(1, 'off')
