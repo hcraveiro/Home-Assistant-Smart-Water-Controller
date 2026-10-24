@@ -194,7 +194,10 @@ class PirateWeatherProvider:
             data = await self._get_shared_payload()
             hourly = (data.get("hourly") or {}).get("data") or []
         except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error("Error processing PirateWeather forecast: %s", exc)
+            if "PirateWeather HTTP 429 cooldown active" in str(exc):
+                _LOGGER.debug("PirateWeather forecast skipped during rate-limit cooldown.")
+            else:
+                _LOGGER.error("Error processing PirateWeather forecast: %s", exc)
             if not self._cache_forecast:
                 self._cache_forecast = temp_cache
             raise APIConnectionError(
