@@ -120,6 +120,34 @@ class RainSamplingTests(unittest.TestCase):
         self.assertEqual(coordinator.last_rain, fixed_time)
 
 
+class DailyForecastAvailabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forecast_failure_does_not_mark_zero_as_valid(self):
+        coordinator = make_coordinator(BrokenWeatherAPI())
+        runtime = weather_runtime.WeatherRuntime(coordinator)
+        self.assertFalse(coordinator.weather_forecast_available)
+        with self.assertLogs(weather_runtime._LOGGER, "WARNING"):
+            await runtime._refresh_from_provider()
+        self.assertFalse(coordinator.weather_forecast_available)
+
+    async def test_successful_forecast_recovers_automatic_watering(self):
+        class RecoveredWeatherAPI:
+            async def will_it_rain(self):
+                return {"will_rain": False, "forecast": []}
+
+            async def is_raining(self):
+                return {"is_raining": False, "current": {}}
+
+            async def get_total_rain_forecast_for_today(self):
+                return 0.0
+
+        coordinator = make_coordinator(RecoveredWeatherAPI())
+        runtime = weather_runtime.WeatherRuntime(coordinator)
+        self.assertFalse(coordinator.weather_forecast_available)
+        await runtime._refresh_from_provider()
+        self.assertTrue(coordinator.weather_forecast_available)
+        self.assertEqual(runtime._forecast_total_mm, 0.0)
+
+
 class ProviderFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_rain_does_not_stop_active_irrigation(self):
         coordinator = make_coordinator(BrokenWeatherAPI())
