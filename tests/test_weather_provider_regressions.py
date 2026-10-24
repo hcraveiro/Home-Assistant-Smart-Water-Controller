@@ -123,6 +123,26 @@ class RateLimitAndCredentialTests(unittest.IsolatedAsyncioTestCase):
                 await provider.get_forecast()
             self.assertEqual(fetch.call_count, 1)
 
+    async def test_pirateweather_cooldown_suppresses_repeated_network_requests(self):
+        provider = pirateweather.PirateWeatherProvider("SECRET-PIRATE-KEY", "38", "-8", 5)
+        with patch.object(pirateweather, "fetch_json", side_effect=APIConnectionError("HTTP 429")) as fetch:
+            with self.assertRaises(APIConnectionError):
+                await provider.get_forecast()
+            for _ in range(5):
+                with self.assertRaisesRegex(APIConnectionError, "cooldown"):
+                    await provider.get_current_weather()
+                with self.assertRaisesRegex(APIConnectionError, "cooldown"):
+                    await provider.get_forecast()
+        self.assertEqual(fetch.call_count, 1)
+
+    async def test_pirateweather_non_rate_limit_failure_does_not_start_cooldown(self):
+        provider = pirateweather.PirateWeatherProvider("SECRET-PIRATE-KEY", "38", "-8", 5)
+        with patch.object(pirateweather, "fetch_json", side_effect=APIConnectionError("HTTP 503")) as fetch:
+            for _ in range(2):
+                with self.assertRaises(APIConnectionError):
+                    await provider.get_current_weather()
+        self.assertEqual(fetch.call_count, 2)
+
     async def test_pirateweather_does_not_log_secret_url(self):
         provider = pirateweather.PirateWeatherProvider("SECRET-PIRATE-KEY", "38", "-8", 5)
         with patch.object(pirateweather, "fetch_json", return_value={"currently": {}}):
