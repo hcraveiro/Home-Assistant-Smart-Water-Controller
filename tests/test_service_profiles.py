@@ -59,7 +59,8 @@ class ServiceProfiles(unittest.IsolatedAsyncioTestCase):
                     "AA:BB:CC:DD:EE:FF", 27, build_solem_toolkit_defaults(model),
                 )
                 await api.turn_on()
-                await api.sprinkle_station(2, 20)
+                station = 1 if model == "bl_nr" else 2
+                await api.sprinkle_station(station, 20)
                 await api.stop_sprinkle()
                 await api.turn_off()
                 expected = ["turn_on", "sprinkle_station_x_for_y_minutes", "stop_manual_sprinkle", "turn_off_permanent"]
@@ -68,7 +69,7 @@ class ServiceProfiles(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(args.args[:2], ("solem_toolkit", service))
                     payload = {"device_mac": "AA:BB:CC:DD:EE:FF", "model": model, "bluetooth_timeout": 27}
                     if index == 1:
-                        payload.update(station=2, minutes=20)
+                        payload.update(station=station, minutes=20)
                     self.assertEqual(args.args[2], payload)
                     self.assertTrue(args.kwargs["blocking"])
 
@@ -120,12 +121,26 @@ class ServiceProfiles(unittest.IsolatedAsyncioTestCase):
         for action in flow._input_data[SERVICE_ACTIONS].values():
             self.assertIn("bl_nr", [p["value"] for p in action["params"]])
 
-    async def test_bl_nr_profile_does_not_restrict_station_count(self):
+    async def test_bl_nr_single_station_guard_in_setup_and_options(self):
         flow = SmartWaterControllerConfigFlow()
         flow._input_data = {IRRIGATION_CONTROL_METHOD: IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR}
         result = await flow.async_step_num_stations({NUM_STATIONS: 2})
-        self.assertEqual(result["step_id"], "lawn_areas")
-        self.assertEqual(flow._num_stations, 2)
+        self.assertEqual(result["errors"], {"base": "bl_nr_single_station"})
+        self.assertEqual(flow._num_stations, 1)
+        entry = SimpleNamespace(data={IRRIGATION_CONTROL_METHOD: IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR}, options={})
+        options = SmartWaterControllerOptionsFlowHandler(entry)
+        options.hass = SimpleNamespace(config_entries=SimpleNamespace(async_update_entry=Mock()))
+        result = await options.async_step_num_stations({NUM_STATIONS: 2})
+        self.assertEqual(result["errors"], {"base": "bl_nr_single_station"})
+        options.hass.config_entries.async_update_entry.assert_not_called()
+
+    async def test_other_profiles_keep_configurable_station_count(self):
+        for method in (IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT, "service", "switch"):
+            flow = SmartWaterControllerConfigFlow()
+            flow._input_data = {IRRIGATION_CONTROL_METHOD: method}
+            result = await flow.async_step_num_stations({NUM_STATIONS: 4})
+            self.assertEqual(result["step_id"], "lawn_areas")
+            self.assertEqual(flow._num_stations, 4)
 
     def test_selector_and_station_schema_compatibility(self):
         schema = build_user_step_schema("", "service")
@@ -133,6 +148,9 @@ class ServiceProfiles(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(schema({IRRIGATION_CONTROL_METHOD: method})[IRRIGATION_CONTROL_METHOD], method)
         self.assertEqual(build_num_stations_schema(2)({NUM_STATIONS: 2})[NUM_STATIONS], 2)
         self.assertEqual(build_num_stations_schema(1)({NUM_STATIONS: 3})[NUM_STATIONS], 3)
+        self.assertEqual(build_num_stations_schema(1, 1)({NUM_STATIONS: 1})[NUM_STATIONS], 1)
+        with self.assertRaises(vol.Invalid):
+            build_num_stations_schema(1, 1)({NUM_STATIONS: 2})
 
     def test_presets_are_independent_and_reject_unknown_models(self):
         first = build_solem_toolkit_defaults("bl_nr")

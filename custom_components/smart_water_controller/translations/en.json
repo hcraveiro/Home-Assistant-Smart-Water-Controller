@@ -13,7 +13,8 @@
       "invalid_service": "Invalid service format. Use domain.service",
       "invalid_mac": "Invalid MAC address. Use AA:BB:CC:DD:EE:FF",
       "mac_required": "A MAC address is required in at least one enabled action parameter of type \"mac address\"",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1."
     },
     "step": {
       "user": {
@@ -271,7 +272,9 @@
         }
       }
     },
-    "error": {}
+    "error": {
+      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1."
+    }
   },
   "selector": {
     "true_false_selector": {
@@ -285,7 +288,7 @@
         "service": "Custom services",
         "solem_toolkit": "Solem BL-IP (Solem Toolkit)",
         "switch": "Station switches",
-        "solem_toolkit_bl_nr": "Solem BL-NR (Solem Toolkit)"
+        "solem_toolkit_bl_nr": "Solem BL-NR (Solem Toolkit, 1 station)"
       }
     },
     "weather_provider": {

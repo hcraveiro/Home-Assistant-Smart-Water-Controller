@@ -305,6 +305,11 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
         """Step: Select number of stations."""
         errors: dict[str, str] = {}
 
+        is_bl_nr = self._input_data.get(IRRIGATION_CONTROL_METHOD) == IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR
+        if user_input is not None and is_bl_nr and int(user_input[NUM_STATIONS]) != 1:
+            errors["base"] = "bl_nr_single_station"
+            user_input = None
+
         if user_input is not None:
             self._input_data.update(user_input)
             self._num_stations = int(self._input_data[NUM_STATIONS])
@@ -314,7 +319,7 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="num_stations",
-            data_schema=build_num_stations_schema(default_num),
+            data_schema=build_num_stations_schema(1 if is_bl_nr else default_num, 1 if is_bl_nr else None),
             errors=errors,
             last_step=False,
         )

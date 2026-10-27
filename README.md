@@ -184,10 +184,20 @@ This method delegates irrigation commands to Solem Toolkit.
 
 Choose **Solem BL-IP (Solem Toolkit)** for BL-IP controllers, or
 **Solem BL-NR (Solem Toolkit)** for a BL-NR controller.
-The BL-NR profile requires Solem Toolkit **V1.0.5 or newer**. Station numbers
-are passed dynamically, just as with BL-IP; the profile does not impose a
-station-count limit. Toolkit V1.0.5 currently implements only station 1 for
-BL-NR, so other stations require additional protocol support in Toolkit.
+The BL-NR profile requires Solem Toolkit **V1.0.5 or newer**.
+
+#### BL-NR station count
+
+The **BL-NR hardware has exactly one station**, as specified on the
+[official SOLEM product page](https://solem-irrigation.com/produit/bl-nr/) and
+[BL-NR technical sheet](https://solem-irrigation.com/wp-content/uploads/2023/12/BL-NR-EN.pdf).
+Its preset therefore accepts exactly **one station** during setup,
+reconfiguration and station-count options. This reflects the device's hardware,
+not missing multi-station protocol support in Toolkit.
+
+The `station` service parameter is still supplied dynamically from the active
+station; for this profile its valid value is 1. BL-IP and Custom services keep
+their configurable station count.
 
 Both presets configure these actions:
 
