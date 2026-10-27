@@ -12,7 +12,7 @@
       "invalid_settings": "Invalid settings",
       "invalid_service": "Invalid service format. Use domain.service",
       "invalid_mac": "Invalid MAC address. Use AA:BB:CC:DD:EE:FF",
-      "mac_required": "A MAC address is required in at least one enabled action parameter of type \"mac address\"",
+      "mac_required": "Solem profiles require a MAC address in at least one enabled action parameter of type MAC address.",
       "unknown": "Unexpected error",
       "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
       "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
@@ -42,7 +42,7 @@
       },
       "service_config": {
         "title": "Service configuration",
-        "description": "Select which actions to enable and which Home Assistant service each action should call.\n\nFormat: domain.service\n\nNote: You must configure at least one parameter of type \"mac address\" with a value in one of the enabled actions.",
+        "description": "Enable the actions you need and search for an existing Home Assistant action, or enter domain.service manually. Custom services do not require a MAC address; Solem profiles do.",
         "data": {
           "enable_sprinkle_station": "Enable: Sprinkle station",
           "service_sprinkle_station": "Service for Sprinkle station (domain.service)",
@@ -158,7 +158,7 @@
       },
       "services": {
         "title": "Services",
-        "description": "Enable/disable actions and set the Home Assistant service for each enabled action.\n\nFormat: domain.service",
+        "description": "Enable the actions you need and search for an existing Home Assistant action, or enter domain.service manually. Custom services do not require a MAC address; Solem profiles do.",
         "data": {
           "enable_sprinkle_station": "Enable: Sprinkle station",
           "service_sprinkle_station": "Service for Sprinkle station (domain.service)",
@@ -245,7 +245,8 @@
     "error": {
       "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
       "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
-      "duplicate_parameter": "Parameter names must be unique within an action."
+      "duplicate_parameter": "Parameter names must be unique within an action.",
+      "mac_required": "Solem profiles require a MAC address in at least one enabled action parameter of type MAC address."
     }
   },
   "selector": {

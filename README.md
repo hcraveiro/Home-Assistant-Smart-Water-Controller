@@ -169,6 +169,15 @@ This is useful for controllers such as Rain Bird when each zone or station is av
 
 Use this method when irrigation actions are exposed through Home Assistant services.
 
+The action fields provide a searchable list of registered Home Assistant actions
+with autocomplete; you can also enter `domain.service` manually. Saved actions
+remain selectable even when temporarily unavailable.
+
+Custom services only require the parameters their actions need. A MAC address is
+not mandatory: for example, you can enable only Start and Stop and use entity IDs
+or other service parameters. Solem BL-IP/BL-NR presets still require a MAC address
+in at least one enabled action. This distinction applies to both setup and options.
+
 The integration can call configured Home Assistant services to:
 
 - Start watering a station.

@@ -193,7 +193,16 @@ def find_first_mac_in_enabled_actions(actions_config: dict[str, Any]) -> str | N
     return None
 
 
-def build_action_description(action: str, service_call: str) -> str:
+def available_service_actions(hass: Any) -> list[str]:
+    """List registered HA actions for searchable selectors."""
+    return sorted(
+        f"{domain}.{service}"
+        for domain, services in hass.services.async_services().items()
+        for service in services
+    )
+
+
+def build_action_description(action: str, service_call: str, *, requires_mac: bool = False) -> str:
     """Build action form description."""
     return (
         f"Action: {action}\n"
@@ -201,4 +210,5 @@ def build_action_description(action: str, service_call: str) -> str:
         "Use + to add parameters, or remove entries you do not need.\n"
         "Fill only the values you want to fix.\n"
         "Empty values will be provided by the coordinator at runtime."
+        + ("\nThis Solem profile requires a MAC address in at least one enabled action." if requires_mac else "")
     )
