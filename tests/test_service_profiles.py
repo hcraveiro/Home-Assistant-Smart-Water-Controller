@@ -29,6 +29,8 @@ class Flow:
 def selector(config):
     """Fake HA selectors only; actual voluptuous schemas are tested unchanged."""
     if "select" in config:
+        if config["select"].get("custom_value"):
+            return str
         return vol.In(config["select"]["options"])
     return lambda value: value
 
@@ -102,12 +104,17 @@ class ServiceProfiles(unittest.IsolatedAsyncioTestCase):
     async def test_each_setup_profile_prefills_actions(self):
         for method, model in [(IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT, "bl_ip"), (IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR, "bl_nr")]:
             flow = SmartWaterControllerConfigFlow()
+            flow.hass = SimpleNamespace(services=SimpleNamespace(async_services=lambda: {}))
             result = await flow.async_step_user({IRRIGATION_CONTROL_METHOD: method})
             self.assertEqual(result["step_id"], "num_stations")
             for action in flow._input_data[SERVICE_ACTIONS].values():
                 self.assertIn(model, [p["value"] for p in action["params"]])
             await flow.async_step_num_stations({NUM_STATIONS: 1})
             result = await flow.async_step_lawn_areas({"station_1_name": "Garden", "station_1_area": 10})
+            self.assertEqual(result["step_id"], "service_config")
+            defaults = result["data_schema"]({})
+            self.assertEqual(defaults["service_sprinkle_station"], "solem_toolkit.sprinkle_station_x_for_y_minutes")
+            result = await flow.async_step_service_config(defaults)
             self.assertEqual(result["step_id"], "configure_action")
 
     async def test_reconfigure_same_preset_preserves_customized_mapping(self):
@@ -173,12 +180,17 @@ class ServiceProfiles(unittest.IsolatedAsyncioTestCase):
 
     async def test_reconfigure_keeps_disabled_preset_actions_disabled(self):
         flow = SmartWaterControllerConfigFlow()
+        flow.hass = SimpleNamespace(services=SimpleNamespace(async_services=lambda: {}))
         actions = build_solem_toolkit_defaults()
         actions["sprinkle_station"]["enabled"] = False
         flow._input_data = {IRRIGATION_CONTROL_METHOD: IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT,
                             SERVICE_ACTIONS: actions}
         await flow.async_step_user({IRRIGATION_CONTROL_METHOD: IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT})
         result = await flow.async_step_lawn_areas({"station_1_name": "Garden", "station_1_area": 10})
+        self.assertEqual(result["step_id"], "service_config")
+        defaults = result["data_schema"]({})
+        self.assertFalse(defaults["enable_sprinkle_station"])
+        result = await flow.async_step_service_config(defaults)
         self.assertEqual(result["step_id"], "configure_action")
         self.assertNotEqual(flow._current_action, "sprinkle_station")
         self.assertFalse(flow._input_data[SERVICE_ACTIONS]["sprinkle_station"]["enabled"])

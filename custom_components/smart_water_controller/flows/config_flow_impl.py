@@ -55,6 +55,7 @@ from .schemas import (
 )
 from .service_actions import (
     build_action_description,
+    available_service_actions,
     build_solem_toolkit_defaults,
     find_first_mac_in_enabled_actions,
     parse_action_params_form,
@@ -197,7 +198,7 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="service_config",
-            data_schema=build_service_config_schema(existing_actions),
+            data_schema=build_service_config_schema(existing_actions, available_service_actions(self.hass)),
             errors=errors,
             last_step=False,
         )
@@ -264,15 +265,16 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
             self._input_data.get(SERVICE_ACTIONS, {})
         )
 
-        if not mac_value:
+        if not mac_value and self._input_data.get(IRRIGATION_CONTROL_METHOD) in SOLEM_CONTROL_METHODS:
             return await self._async_show_action_form(
                 action=action,
                 errors={"base": "mac_required"},
             )
 
-        await self.async_set_unique_id(normalize_mac_address(mac_value))
-        if self._reconfigure_entry is None:
-            self._abort_if_unique_id_configured()
+        if mac_value:
+            await self.async_set_unique_id(normalize_mac_address(mac_value))
+            if self._reconfigure_entry is None:
+                self._abort_if_unique_id_configured()
 
         return await self.async_step_location()
 
@@ -291,7 +293,10 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
             existing_params = user_input[SERVICE_ACTION_PARAMS]
         service_call = str(existing.get(SERVICE_ACTION_SERVICE, "") or "")
 
-        description = build_action_description(action, service_call)
+        description = build_action_description(
+            action, service_call,
+            requires_mac=self._input_data.get(IRRIGATION_CONTROL_METHOD) in SOLEM_CONTROL_METHODS,
+        )
 
         return self.async_show_form(
             step_id="configure_action",
@@ -373,13 +378,6 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 if method == IRRIGATION_CONTROL_METHOD_SWITCH:
                     return await self.async_step_station_switches()
-
-                if method in SOLEM_CONTROL_METHODS:
-                    self._selected_actions = [
-                        action for action in SUPPORTED_ACTIONS_IN_ORDER
-                        if self._input_data.get(SERVICE_ACTIONS, {}).get(action, {}).get(SERVICE_ACTION_ENABLED, True)
-                    ]
-                    return await self._async_goto_next_action_step()
 
                 return await self.async_step_service_config()
 

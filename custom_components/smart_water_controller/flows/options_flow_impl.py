@@ -11,6 +11,7 @@ from ..const import (
     DEFAULT_SOIL_MOISTURE,
     IRRIGATION_CONTROL_METHOD,
     IRRIGATION_CONTROL_METHOD_SERVICE,
+    SOLEM_CONTROL_METHODS,
     IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR,
     IRRIGATION_CONTROL_METHOD_SWITCH,
     NUM_STATIONS,
@@ -41,6 +42,7 @@ from .schemas import (
 )
 from .service_actions import (
     build_action_description,
+    available_service_actions,
     find_first_mac_in_enabled_actions,
     parse_action_params_form,
     parse_service_config_form,
@@ -133,7 +135,7 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="services",
-            data_schema=build_service_config_schema(existing_actions),
+            data_schema=build_service_config_schema(existing_actions, available_service_actions(self.hass)),
             errors=errors,
         )
 
@@ -191,21 +193,22 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
         current_actions[action] = current_action_cfg
 
         new_data = {**self._config_entry.data, SERVICE_ACTIONS: current_actions}
-        self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
-
         if self._selected_actions:
+            self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
             return await self._async_goto_next_action_step_services()
 
         mac_value = find_first_mac_in_enabled_actions(
             new_data.get(SERVICE_ACTIONS, {})
         )
 
-        if not mac_value:
+        if not mac_value and self._config_entry.data.get(IRRIGATION_CONTROL_METHOD) in SOLEM_CONTROL_METHODS:
             return await self._async_show_action_form_services(
                 action=action,
                 errors={"base": "mac_required"},
+                user_input=user_input,
             )
 
+        self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
         await self.hass.config_entries.async_reload(self._config_entry.entry_id)
         return self.async_create_entry(title="", data=dict(self._config_entry.options))
 
@@ -224,7 +227,10 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
             existing_params = user_input[SERVICE_ACTION_PARAMS]
         service_call = str(existing.get(SERVICE_ACTION_SERVICE, "") or "")
 
-        description = build_action_description(action, service_call)
+        description = build_action_description(
+            action, service_call,
+            requires_mac=self._config_entry.data.get(IRRIGATION_CONTROL_METHOD) in SOLEM_CONTROL_METHODS,
+        )
 
         return self.async_show_form(
             step_id="services_configure_action",

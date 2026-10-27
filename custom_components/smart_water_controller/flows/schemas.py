@@ -75,8 +75,19 @@ def build_user_step_schema(default_name: str, default_method: str) -> vol.Schema
     )
 
 
-def build_service_config_schema(existing_actions: dict[str, Any]) -> vol.Schema:
+def build_service_config_schema(
+    existing_actions: dict[str, Any], available_services: list[str] | None = None
+) -> vol.Schema:
     """Build schema for service/action enablement and service mapping."""
+    options = set(available_services or [])
+    options.update(
+        config.get(SERVICE_ACTION_SERVICE, "")
+        for config in existing_actions.values()
+        if config.get(SERVICE_ACTION_SERVICE)
+    )
+    action_selector = selector({"select": {
+        "options": sorted(options), "custom_value": True, "mode": "dropdown",
+    }})
     return vol.Schema(
         {
             vol.Optional(
@@ -95,7 +106,7 @@ def build_service_config_schema(existing_actions: dict[str, Any]) -> vol.Schema:
                     )
                     or ""
                 ),
-            ): str,
+            ): action_selector,
 
             vol.Optional(
                 f"enable_{ACTION_STOP_SPRINKLE}",
@@ -113,7 +124,7 @@ def build_service_config_schema(existing_actions: dict[str, Any]) -> vol.Schema:
                     )
                     or ""
                 ),
-            ): str,
+            ): action_selector,
 
             vol.Optional(
                 f"enable_{ACTION_TURN_ON}",
@@ -131,7 +142,7 @@ def build_service_config_schema(existing_actions: dict[str, Any]) -> vol.Schema:
                     )
                     or ""
                 ),
-            ): str,
+            ): action_selector,
 
             vol.Optional(
                 f"enable_{ACTION_TURN_OFF}",
@@ -149,7 +160,7 @@ def build_service_config_schema(existing_actions: dict[str, Any]) -> vol.Schema:
                     )
                     or ""
                 ),
-            ): str,
+            ): action_selector,
         }
     )
 
