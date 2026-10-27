@@ -14,7 +14,9 @@
       "invalid_mac": "Invalid MAC address. Use AA:BB:CC:DD:EE:FF",
       "mac_required": "A MAC address is required in at least one enabled action parameter of type \"mac address\"",
       "unknown": "Unexpected error",
-      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1."
+      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
+      "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
+      "duplicate_parameter": "Parameter names must be unique within an action."
     },
     "step": {
       "user": {
@@ -56,26 +58,10 @@
         "title": "Service parameters",
         "description": "{service_description}",
         "data": {
-          "param_1_name": "Parameter 1 name",
-          "param_1_label": "Parameter 1 label",
-          "param_1_value": "Parameter 1 value",
-          "param_1_type": "Parameter 1 type",
-          "param_2_name": "Parameter 2 name",
-          "param_2_label": "Parameter 2 label",
-          "param_2_value": "Parameter 2 value",
-          "param_2_type": "Parameter 2 type",
-          "param_3_name": "Parameter 3 name",
-          "param_3_label": "Parameter 3 label",
-          "param_3_value": "Parameter 3 value",
-          "param_3_type": "Parameter 3 type",
-          "param_4_name": "Parameter 4 name",
-          "param_4_label": "Parameter 4 label",
-          "param_4_value": "Parameter 4 value",
-          "param_4_type": "Parameter 4 type",
-          "param_5_name": "Parameter 5 name",
-          "param_5_label": "Parameter 5 label",
-          "param_5_value": "Parameter 5 value",
-          "param_5_type": "Parameter 5 type"
+          "params": "Parameters"
+        },
+        "data_description": {
+          "params": "Use + to add a parameter. Remove entries you do not need. Leave values empty to use the selected dynamic source."
         }
       },
       "num_stations": {
@@ -188,26 +174,10 @@
         "title": "Service parameters",
         "description": "{service_description}",
         "data": {
-          "param_1_name": "Parameter 1 name",
-          "param_1_label": "Parameter 1 label",
-          "param_1_value": "Parameter 1 value",
-          "param_1_type": "Parameter 1 type",
-          "param_2_name": "Parameter 2 name",
-          "param_2_label": "Parameter 2 label",
-          "param_2_value": "Parameter 2 value",
-          "param_2_type": "Parameter 2 type",
-          "param_3_name": "Parameter 3 name",
-          "param_3_label": "Parameter 3 label",
-          "param_3_value": "Parameter 3 value",
-          "param_3_type": "Parameter 3 type",
-          "param_4_name": "Parameter 4 name",
-          "param_4_label": "Parameter 4 label",
-          "param_4_value": "Parameter 4 value",
-          "param_4_type": "Parameter 4 type",
-          "param_5_name": "Parameter 5 name",
-          "param_5_label": "Parameter 5 label",
-          "param_5_value": "Parameter 5 value",
-          "param_5_type": "Parameter 5 type"
+          "params": "Parameters"
+        },
+        "data_description": {
+          "params": "Use + to add a parameter. Remove entries you do not need. Leave values empty to use the selected dynamic source."
         }
       },
       "num_stations": {
@@ -273,7 +243,9 @@
       }
     },
     "error": {
-      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1."
+      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
+      "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
+      "duplicate_parameter": "Parameter names must be unique within an action."
     }
   },
   "selector": {

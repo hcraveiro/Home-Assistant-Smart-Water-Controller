@@ -26,6 +26,7 @@ from ..const import (
     SOLEM_TOOLKIT_SERVICE_TURN_OFF,
     SOLEM_TOOLKIT_SERVICE_TURN_ON,
     SUPPORTED_ACTIONS_IN_ORDER,
+    SUPPORTED_PARAM_TYPES,
 )
 
 
@@ -140,35 +141,40 @@ def parse_service_config_form(
 def parse_action_params_form(
     user_input: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Parse parameter fields for a single action configuration step."""
+    """Validate the editable parameter list without changing its stored format."""
+    raw_params = user_input.get(SERVICE_ACTION_PARAMS, [])
+    if not isinstance(raw_params, list):
+        return [], {"base": "invalid_parameter"}
+
     params: list[dict[str, Any]] = []
-    errors: dict[str, str] = {}
-
-    for idx in range(1, 6):
-        name = (user_input.get(f"param_{idx}_name") or "").strip()
-        label = (user_input.get(f"param_{idx}_label") or "").strip()
-        value = (user_input.get(f"param_{idx}_value") or "").strip()
-        ptype = (user_input.get(f"param_{idx}_type") or "").strip()
-
-        if not name and not label and not value and not ptype:
-            continue
-
-        if not ptype:
-            ptype = SERVICE_PARAM_TYPE_OTHER
-
+    seen: set[str] = set()
+    for item in raw_params:
+        if not isinstance(item, dict):
+            return [], {"base": "invalid_parameter"}
+        name = item.get(SERVICE_PARAM_NAME, "")
+        label = item.get(SERVICE_PARAM_LABEL, "")
+        value = item.get(SERVICE_PARAM_VALUE, "")
+        ptype = item.get(SERVICE_PARAM_TYPE) or SERVICE_PARAM_TYPE_OTHER
+        if not isinstance(name, str) or not name.strip() or not isinstance(label, str):
+            return [], {"base": "invalid_parameter"}
+        if not isinstance(ptype, str) or ptype not in SUPPORTED_PARAM_TYPES:
+            return [], {"base": "invalid_parameter"}
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            return [], {"base": "invalid_parameter"}
+        name = name.strip()
+        if name in seen:
+            return [], {"base": "duplicate_parameter"}
+        seen.add(name)
+        value = "" if value is None else str(value).strip()
         if ptype == SERVICE_PARAM_TYPE_MAC and value and not _is_mac_address(value):
-            errors["base"] = "invalid_mac"
-
-        params.append(
-            {
-                SERVICE_PARAM_NAME: name,
-                SERVICE_PARAM_LABEL: label,
-                SERVICE_PARAM_VALUE: value if value else "",
-                SERVICE_PARAM_TYPE: ptype,
-            }
-        )
-
-    return params, errors
+            return [], {"base": "invalid_mac"}
+        params.append({
+            SERVICE_PARAM_NAME: name,
+            SERVICE_PARAM_LABEL: label.strip(),
+            SERVICE_PARAM_VALUE: value,
+            SERVICE_PARAM_TYPE: ptype,
+        })
+    return params, {}
 
 
 def find_first_mac_in_enabled_actions(actions_config: dict[str, Any]) -> str | None:
@@ -192,6 +198,7 @@ def build_action_description(action: str, service_call: str) -> str:
     return (
         f"Action: {action}\n"
         f"Service: {service_call}\n\n"
-        "Fill only the parameters you want to hardcode.\n"
+        "Use + to add parameters, or remove entries you do not need.\n"
+        "Fill only the values you want to fix.\n"
         "Empty values will be provided by the coordinator at runtime."
     )
