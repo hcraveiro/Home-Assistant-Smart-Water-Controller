@@ -11,6 +11,7 @@ from ..const import (
     DEFAULT_SOIL_MOISTURE,
     IRRIGATION_CONTROL_METHOD,
     IRRIGATION_CONTROL_METHOD_SERVICE,
+    IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR,
     IRRIGATION_CONTROL_METHOD_SWITCH,
     NUM_STATIONS,
     SERVICE_ACTIONS,
@@ -240,6 +241,11 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
         current_names = list(self._config_entry.data.get("station_names", []) or [])
         current_areas = list(self._config_entry.data.get("station_areas", []) or [])
 
+        is_bl_nr = self._config_entry.data.get(IRRIGATION_CONTROL_METHOD) == IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR
+        if user_input is not None and is_bl_nr and int(user_input[NUM_STATIONS]) != 1:
+            errors["base"] = "bl_nr_single_station"
+            user_input = None
+
         if user_input is not None:
             try:
                 new_num = int(user_input[NUM_STATIONS])
@@ -269,7 +275,7 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="num_stations",
-            data_schema=build_num_stations_schema(current_num),
+            data_schema=build_num_stations_schema(1 if is_bl_nr else current_num, 1 if is_bl_nr else None),
             errors=errors,
         )
 

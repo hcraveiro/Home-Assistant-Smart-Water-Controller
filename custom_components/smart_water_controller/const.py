@@ -49,6 +49,8 @@ IRRIGATION_CONTROL_METHOD = "irrigation_control_method"
 IRRIGATION_CONTROL_METHOD_SERVICE = "service"
 IRRIGATION_CONTROL_METHOD_SWITCH = "switch"
 IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT = "solem_toolkit"
+IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR = "solem_toolkit_bl_nr"
+SOLEM_CONTROL_METHODS = (IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT, IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR)
 
 # ----------------------------------------------------------------------------
 # Switch-based control configuration
@@ -114,3 +116,4 @@ SOLEM_TOOLKIT_SERVICE_SPRINKLE = "solem_toolkit.sprinkle_station_x_for_y_minutes
 SOLEM_TOOLKIT_SERVICE_STOP = "solem_toolkit.stop_manual_sprinkle"
 SOLEM_TOOLKIT_SERVICE_TURN_ON = "solem_toolkit.turn_on"
 SOLEM_TOOLKIT_SERVICE_TURN_OFF = "solem_toolkit.turn_off_permanent"
+

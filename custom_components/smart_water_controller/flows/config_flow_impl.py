@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
@@ -22,6 +23,8 @@ from ..const import (
     IRRIGATION_CONTROL_METHOD,
     IRRIGATION_CONTROL_METHOD_SERVICE,
     IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT,
+    IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR,
+    SOLEM_CONTROL_METHODS,
     IRRIGATION_CONTROL_METHOD_SWITCH,
     NUM_STATIONS,
     SERVICE_ACTIONS,
@@ -92,7 +95,7 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="unknown")
 
         self._reconfigure_entry = config_entry
-        self._input_data = dict(config_entry.data)
+        self._input_data = deepcopy(dict(config_entry.data))
         self._num_stations = int(self._input_data.get(NUM_STATIONS, 1))
 
         if CONF_NAME not in self._input_data and config_entry.title:
@@ -115,11 +118,14 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._input_data.pop(CONF_NAME, None)
 
             method = user_input[IRRIGATION_CONTROL_METHOD]
+            previous_method = self._input_data.get(IRRIGATION_CONTROL_METHOD)
             self._input_data[IRRIGATION_CONTROL_METHOD] = method
 
-            if method == IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT:
+            if method in SOLEM_CONTROL_METHODS:
                 try:
-                    self._input_data[SERVICE_ACTIONS] = build_solem_toolkit_defaults()
+                    if previous_method != method or not self._input_data.get(SERVICE_ACTIONS):
+                        model = "bl_nr" if method == IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR else "bl_ip"
+                        self._input_data[SERVICE_ACTIONS] = build_solem_toolkit_defaults(model)
                 except Exception:  # pylint: disable=broad-except
                     _LOGGER.exception("Failed to prefill Solem Toolkit defaults")
                     errors["base"] = "unknown"
@@ -299,6 +305,11 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
         """Step: Select number of stations."""
         errors: dict[str, str] = {}
 
+        is_bl_nr = self._input_data.get(IRRIGATION_CONTROL_METHOD) == IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR
+        if user_input is not None and is_bl_nr and int(user_input[NUM_STATIONS]) != 1:
+            errors["base"] = "bl_nr_single_station"
+            user_input = None
+
         if user_input is not None:
             self._input_data.update(user_input)
             self._num_stations = int(self._input_data[NUM_STATIONS])
@@ -308,7 +319,7 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="num_stations",
-            data_schema=build_num_stations_schema(default_num),
+            data_schema=build_num_stations_schema(1 if is_bl_nr else default_num, 1 if is_bl_nr else None),
             errors=errors,
             last_step=False,
         )
@@ -360,8 +371,11 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                 if method == IRRIGATION_CONTROL_METHOD_SWITCH:
                     return await self.async_step_station_switches()
 
-                if method == IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT:
-                    self._selected_actions = list(SUPPORTED_ACTIONS_IN_ORDER)
+                if method in SOLEM_CONTROL_METHODS:
+                    self._selected_actions = [
+                        action for action in SUPPORTED_ACTIONS_IN_ORDER
+                        if self._input_data.get(SERVICE_ACTIONS, {}).get(action, {}).get(SERVICE_ACTION_ENABLED, True)
+                    ]
                     return await self._async_goto_next_action_step()
 
                 return await self.async_step_service_config()

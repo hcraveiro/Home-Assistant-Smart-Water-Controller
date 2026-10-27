@@ -21,6 +21,7 @@ from ..const import (
     IRRIGATION_CONTROL_METHOD,
     IRRIGATION_CONTROL_METHOD_SERVICE,
     IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT,
+    IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR,
     IRRIGATION_CONTROL_METHOD_SWITCH,
     MIN_SCAN_INTERVAL,
     NUM_STATIONS,
@@ -61,6 +62,7 @@ def build_user_step_schema(default_name: str, default_method: str) -> vol.Schema
                             IRRIGATION_CONTROL_METHOD_SWITCH,
                             IRRIGATION_CONTROL_METHOD_SERVICE,
                             IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT,
+                            IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR,
                         ],
                         "mode": "dropdown",
                         "translation_key": "irrigation_control_method",
@@ -188,13 +190,13 @@ def build_action_params_schema(existing_params: list[dict[str, Any]]) -> vol.Sch
     return vol.Schema(schema_dict)
 
 
-def build_num_stations_schema(default_num: int) -> vol.Schema:
+def build_num_stations_schema(default_num: int, max_stations: int | None = None) -> vol.Schema:
     """Build schema for number of stations."""
     return vol.Schema(
         {
             vol.Required(NUM_STATIONS, default=default_num): vol.All(
                 vol.Coerce(int),
-                vol.Clamp(min=1),
+                vol.Range(min=1, max=max_stations) if max_stations is not None else vol.Clamp(min=1),
             )
         }
     )

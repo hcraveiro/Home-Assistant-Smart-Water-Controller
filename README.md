@@ -5,13 +5,13 @@
 
 Integrate irrigation controllers into Home Assistant with support for manual watering, scheduled watering, station-level planning, rain-aware watering, current irrigation tracking and optional soil moisture protection.
 
-This integration was originally created for **Solem Bluetooth Watering Controllers** and has been tested with **Solem BL-IP**, but it can also control other irrigation systems, such as **Rain Bird**, when each station is exposed as a Home Assistant switch.
+This integration was originally created for **Solem Bluetooth Watering Controllers** and supports **Solem BL-IP** and **Solem BL-NR**, but it can also control other irrigation systems, such as **Rain Bird**, when each station is exposed as a Home Assistant switch.
 
 The integration supports different irrigation control methods:
 
 - **Station switches**: one Home Assistant switch per irrigation station.
 - **Home Assistant services**: generic service-based control.
-- **Solem Toolkit**: recommended when using compatible Solem Bluetooth controllers.
+- **Solem BL-IP / BL-NR presets**: preconfigured Solem Toolkit service mappings.
 
 When configured with a weather provider, the integration can reduce or skip watering based on actual rain and forecasted rain.
 
@@ -181,6 +181,36 @@ The integration can call configured Home Assistant services to:
 Use this method when using a compatible Solem Bluetooth controller.
 
 This method delegates irrigation commands to Solem Toolkit.
+
+Choose **Solem BL-IP (Solem Toolkit)** for BL-IP controllers, or
+**Solem BL-NR (Solem Toolkit, single station)** for a BL-NR controller.
+The BL-NR profile requires Solem Toolkit **V1.0.5 or newer** and accepts exactly
+one station in setup and in station-count options.
+
+Both presets configure these actions:
+
+| Smart Water Controller action | Solem Toolkit service |
+| --- | --- |
+| Start station | `solem_toolkit.sprinkle_station_x_for_y_minutes` |
+| Stop | `solem_toolkit.stop_manual_sprinkle` |
+| Enable controller | `solem_toolkit.turn_on` |
+| Disable controller | `solem_toolkit.turn_off_permanent` |
+
+Every new preset action explicitly sends `model: bl_ip` or `model: bl_nr`.
+Enter the controller MAC in the action parameter forms. Station and watering
+duration are filled from the active station and schedule at runtime, and the
+Bluetooth timeout comes from the integration's Basic data options unless an
+action explicitly overrides it. The BL-NR controller manages its own watering
+timer; Smart Water Controller still manages scheduling, session tracking and Stop.
+
+Existing BL-IP configurations retain their stored `solem_toolkit` method ID
+and service mappings. A mapping without `model` continues to use Toolkit's
+BL-IP default. Reconfiguring with the same preset preserves customized parameters;
+selecting a different preset replaces the mappings with that preset's defaults.
+Use **Reconfigure** to change between the presets, and **Options → Services** to
+edit the action mappings. **Custom services** and **Station switches** remain
+available for other controllers.
+
 
 ---
 
@@ -889,3 +919,4 @@ on a Rain Bird controller across evening and morning cycles: each zone completed
 the switches returned to OFF, and applied/remaining amounts matched the daily target.
 The disconnect/reconnect and failed-command scenarios are covered by automated tests;
 physical reconnection behavior still requires a separate field test.
+
