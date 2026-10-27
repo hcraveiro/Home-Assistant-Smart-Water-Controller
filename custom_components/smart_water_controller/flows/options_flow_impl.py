@@ -183,7 +183,7 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
         errors.update(param_errors)
 
         if errors:
-            return await self._async_show_action_form_services(action=action, errors=errors)
+            return await self._async_show_action_form_services(action=action, errors=errors, user_input=user_input)
 
         current_actions = dict(self._config_entry.data.get(SERVICE_ACTIONS, {}))
         current_action_cfg = dict(current_actions.get(action, {}))
@@ -214,11 +214,14 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
         *,
         action: str,
         errors: dict[str, str] | None = None,
+        user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Render a parameter configuration form for a given action."""
         errors = errors or {}
         existing = self._config_entry.data.get(SERVICE_ACTIONS, {}).get(action, {})
         existing_params: list[dict[str, Any]] = existing.get(SERVICE_ACTION_PARAMS, []) or []
+        if user_input is not None and isinstance(user_input.get(SERVICE_ACTION_PARAMS), list):
+            existing_params = user_input[SERVICE_ACTION_PARAMS]
         service_call = str(existing.get(SERVICE_ACTION_SERVICE, "") or "")
 
         description = build_action_description(action, service_call)

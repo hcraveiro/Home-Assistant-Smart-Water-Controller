@@ -209,6 +209,10 @@ Both presets configure these actions:
 | Disable controller | `solem_toolkit.turn_off_permanent` |
 
 Every new preset action explicitly sends `model: bl_ip` or `model: bl_nr`.
+The action parameter editor uses an expandable list: use **+** to add a new
+parameter and remove entries you do not need. Each item contains the parameter
+name, description, value and value source. There is no fixed five-parameter limit.
+Solem presets and existing mappings are prefilled, including the fixed model.
 Enter the controller MAC in the action parameter forms. Station and watering
 duration are filled from the active station and schedule at runtime, and the
 Bluetooth timeout comes from the integration's Basic data options unless an

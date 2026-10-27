@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from copy import deepcopy
 
 import voluptuous as vol
 
@@ -25,6 +26,7 @@ from ..const import (
     IRRIGATION_CONTROL_METHOD_SWITCH,
     MIN_SCAN_INTERVAL,
     NUM_STATIONS,
+    SERVICE_ACTION_PARAMS,
     SERVICE_ACTION_ENABLED,
     SERVICE_ACTION_SERVICE,
     SERVICE_PARAM_LABEL,
@@ -154,40 +156,33 @@ def build_service_config_schema(existing_actions: dict[str, Any]) -> vol.Schema:
 
 def build_action_params_schema(existing_params: list[dict[str, Any]]) -> vol.Schema:
     """Build schema for action parameter configuration."""
-    schema_dict: dict[Any, Any] = {}
-
-    for idx in range(1, 6):
-        current = existing_params[idx - 1] if idx - 1 < len(existing_params) else {}
-
-        schema_dict[
-            vol.Optional(
-                f"param_{idx}_name",
-                default=str(current.get(SERVICE_PARAM_NAME, "") or ""),
-            )
-        ] = str
-
-        schema_dict[
-            vol.Optional(
-                f"param_{idx}_label",
-                default=str(current.get(SERVICE_PARAM_LABEL, "") or ""),
-            )
-        ] = str
-
-        schema_dict[
-            vol.Optional(
-                f"param_{idx}_value",
-                default=str(current.get(SERVICE_PARAM_VALUE, "") or ""),
-            )
-        ] = str
-
-        schema_dict[
-            vol.Optional(
-                f"param_{idx}_type",
-                default=str(current.get(SERVICE_PARAM_TYPE, "other") or "other"),
-            )
-        ] = selector({"select": {"options": SUPPORTED_PARAM_TYPES, "mode": "dropdown"}})
-
-    return vol.Schema(schema_dict)
+    return vol.Schema({
+        vol.Required(SERVICE_ACTION_PARAMS, default=deepcopy(existing_params)): selector({
+            "object": {
+                "multiple": True,
+                "label_field": SERVICE_PARAM_NAME,
+                "description_field": SERVICE_PARAM_LABEL,
+                "fields": {
+                    SERVICE_PARAM_NAME: {"label": "Parameter name", "required": True, "selector": {"text": {}}},
+                    SERVICE_PARAM_LABEL: {"label": "Description", "selector": {"text": {}}},
+                    SERVICE_PARAM_VALUE: {"label": "Value (leave empty for a dynamic value)", "selector": {"text": {}}},
+                    SERVICE_PARAM_TYPE: {
+                        "label": "Value source",
+                        "required": True,
+                        "selector": {"select": {
+                            "options": [
+                                {"value": "time", "label": "Watering duration (minutes)"},
+                                {"value": "mac_address", "label": "Controller MAC address"},
+                                {"value": "station", "label": "Active station"},
+                                {"value": "other", "label": "Fixed value / other"},
+                            ],
+                            "mode": "dropdown",
+                        }},
+                    },
+                },
+            },
+        }),
+    })
 
 
 def build_num_stations_schema(default_num: int, max_stations: int | None = None) -> vol.Schema:
