@@ -29,9 +29,11 @@ from ..const import (
 )
 
 
-def build_solem_toolkit_defaults() -> dict[str, Any]:
-    """Return default SERVICE_ACTIONS configuration for Solem Toolkit."""
-    return {
+def build_solem_toolkit_defaults(model: str = "bl_ip") -> dict[str, Any]:
+    """Return independent preset actions with explicit Toolkit model routing."""
+    if model not in ("bl_ip", "bl_nr"):
+        raise ValueError("Unsupported Solem Toolkit model")
+    actions = {
         ACTION_SPRINKLE_STATION: {
             SERVICE_ACTION_ENABLED: True,
             SERVICE_ACTION_SERVICE: SOLEM_TOOLKIT_SERVICE_SPRINKLE,
@@ -93,6 +95,15 @@ def build_solem_toolkit_defaults() -> dict[str, Any]:
             ],
         },
     }
+
+    for config in actions.values():
+        config[SERVICE_ACTION_PARAMS].append({
+            SERVICE_PARAM_NAME: "model",
+            SERVICE_PARAM_LABEL: "Solem model",
+            SERVICE_PARAM_VALUE: model,
+            SERVICE_PARAM_TYPE: SERVICE_PARAM_TYPE_OTHER,
+        })
+    return actions
 
 
 def parse_service_config_form(

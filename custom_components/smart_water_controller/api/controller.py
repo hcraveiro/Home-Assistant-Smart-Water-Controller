@@ -188,6 +188,9 @@ class SmartWaterControllerAPI:
                 # "other" (or unknown type) with empty value means coordinator will skip.
                 continue
 
+        if domain == "solem_toolkit":
+            payload.setdefault("bluetooth_timeout", self.bluetooth_timeout)
+
         try:
             await self.hass.services.async_call(domain, service, payload, blocking=True)
         except HomeAssistantError as exc:
@@ -214,3 +217,4 @@ class SmartWaterControllerAPI:
     async def turn_off(self) -> None:
         """Turn controller off."""
         await self._async_call_configured_service(action=ACTION_TURN_OFF)
+

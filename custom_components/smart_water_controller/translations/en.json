@@ -13,7 +13,8 @@
       "invalid_service": "Invalid service format. Use domain.service",
       "invalid_mac": "Invalid MAC address. Use AA:BB:CC:DD:EE:FF",
       "mac_required": "A MAC address is required in at least one enabled action parameter of type \"mac address\"",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1."
     },
     "step": {
       "user": {
@@ -85,40 +86,40 @@
       },
       "lawn_areas": {
         "title": "Lawn Areas configuration",
-        "description": "Please provide a name and the size in square meters (m²) for each station.",
+        "description": "Please provide a name and the size in square meters (m\u00b2) for each station.",
         "data": {
           "station_1_name": "Station 1 Name",
-          "station_1_area": "Station 1 Area (m²)",
+          "station_1_area": "Station 1 Area (m\u00b2)",
           "station_2_name": "Station 2 Name",
-          "station_2_area": "Station 2 Area (m²)",
+          "station_2_area": "Station 2 Area (m\u00b2)",
           "station_3_name": "Station 3 Name",
-          "station_3_area": "Station 3 Area (m²)",
+          "station_3_area": "Station 3 Area (m\u00b2)",
           "station_4_name": "Station 4 Name",
-          "station_4_area": "Station 4 Area (m²)",
+          "station_4_area": "Station 4 Area (m\u00b2)",
           "station_5_name": "Station 5 Name",
-          "station_5_area": "Station 5 Area (m²)",
+          "station_5_area": "Station 5 Area (m\u00b2)",
           "station_6_name": "Station 6 Name",
-          "station_6_area": "Station 6 Area (m²)",
+          "station_6_area": "Station 6 Area (m\u00b2)",
           "station_7_name": "Station 7 Name",
-          "station_7_area": "Station 7 Area (m²)",
+          "station_7_area": "Station 7 Area (m\u00b2)",
           "station_8_name": "Station 8 Name",
-          "station_8_area": "Station 8 Area (m²)",
+          "station_8_area": "Station 8 Area (m\u00b2)",
           "station_9_name": "Station 9 Name",
-          "station_9_area": "Station 9 Area (m²)",
+          "station_9_area": "Station 9 Area (m\u00b2)",
           "station_10_name": "Station 10 Name",
-          "station_10_area": "Station 10 Area (m²)",
+          "station_10_area": "Station 10 Area (m\u00b2)",
           "station_11_name": "Station 11 Name",
-          "station_11_area": "Station 11 Area (m²)",
+          "station_11_area": "Station 11 Area (m\u00b2)",
           "station_12_name": "Station 12 Name",
-          "station_12_area": "Station 12 Area (m²)",
+          "station_12_area": "Station 12 Area (m\u00b2)",
           "station_13_name": "Station 13 Name",
-          "station_13_area": "Station 13 Area (m²)",
+          "station_13_area": "Station 13 Area (m\u00b2)",
           "station_14_name": "Station 14 Name",
-          "station_14_area": "Station 14 Area (m²)",
+          "station_14_area": "Station 14 Area (m\u00b2)",
           "station_15_name": "Station 15 Name",
-          "station_15_area": "Station 15 Area (m²)",
+          "station_15_area": "Station 15 Area (m\u00b2)",
           "station_16_name": "Station 16 Name",
-          "station_16_area": "Station 16 Area (m²)"
+          "station_16_area": "Station 16 Area (m\u00b2)"
         }
       },
       "location": {
@@ -210,48 +211,48 @@
         }
       },
       "num_stations": {
-          "title": "Stations",
-          "description": "Choose how many stations your controller has. You can edit names and areas in the next step.",
-          "data": {
-            "num_stations": "Number of stations"
-          }
+        "title": "Stations",
+        "description": "Choose how many stations your controller has. You can edit names and areas in the next step.",
+        "data": {
+          "num_stations": "Number of stations"
+        }
       },
       "lawn_areas": {
         "title": "Lawn Areas configuration",
-        "description": "Please provide a name and the size in square meters (m²) for each station.",
+        "description": "Please provide a name and the size in square meters (m\u00b2) for each station.",
         "data": {
           "station_1_name": "Station 1 Name",
-          "station_1_area": "Station 1 Area (m²)",
+          "station_1_area": "Station 1 Area (m\u00b2)",
           "station_2_name": "Station 2 Name",
-          "station_2_area": "Station 2 Area (m²)",
+          "station_2_area": "Station 2 Area (m\u00b2)",
           "station_3_name": "Station 3 Name",
-          "station_3_area": "Station 3 Area (m²)",
+          "station_3_area": "Station 3 Area (m\u00b2)",
           "station_4_name": "Station 4 Name",
-          "station_4_area": "Station 4 Area (m²)",
+          "station_4_area": "Station 4 Area (m\u00b2)",
           "station_5_name": "Station 5 Name",
-          "station_5_area": "Station 5 Area (m²)",
+          "station_5_area": "Station 5 Area (m\u00b2)",
           "station_6_name": "Station 6 Name",
-          "station_6_area": "Station 6 Area (m²)",
+          "station_6_area": "Station 6 Area (m\u00b2)",
           "station_7_name": "Station 7 Name",
-          "station_7_area": "Station 7 Area (m²)",
+          "station_7_area": "Station 7 Area (m\u00b2)",
           "station_8_name": "Station 8 Name",
-          "station_8_area": "Station 8 Area (m²)",
+          "station_8_area": "Station 8 Area (m\u00b2)",
           "station_9_name": "Station 9 Name",
-          "station_9_area": "Station 9 Area (m²)",
+          "station_9_area": "Station 9 Area (m\u00b2)",
           "station_10_name": "Station 10 Name",
-          "station_10_area": "Station 10 Area (m²)",
+          "station_10_area": "Station 10 Area (m\u00b2)",
           "station_11_name": "Station 11 Name",
-          "station_11_area": "Station 11 Area (m²)",
+          "station_11_area": "Station 11 Area (m\u00b2)",
           "station_12_name": "Station 12 Name",
-          "station_12_area": "Station 12 Area (m²)",
+          "station_12_area": "Station 12 Area (m\u00b2)",
           "station_13_name": "Station 13 Name",
-          "station_13_area": "Station 13 Area (m²)",
+          "station_13_area": "Station 13 Area (m\u00b2)",
           "station_14_name": "Station 14 Name",
-          "station_14_area": "Station 14 Area (m²)",
+          "station_14_area": "Station 14 Area (m\u00b2)",
           "station_15_name": "Station 15 Name",
-          "station_15_area": "Station 15 Area (m²)",
+          "station_15_area": "Station 15 Area (m\u00b2)",
           "station_16_name": "Station 16 Name",
-          "station_16_area": "Station 16 Area (m²)"
+          "station_16_area": "Station 16 Area (m\u00b2)"
         }
       },
       "weather": {
@@ -270,6 +271,9 @@
           "soil_moisture_threshold": "Soil Moisture Threshold (%)"
         }
       }
+    },
+    "error": {
+      "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1."
     }
   },
   "selector": {
@@ -281,8 +285,10 @@
     },
     "irrigation_control_method": {
       "options": {
-        "service": "Service",
-        "solem_toolkit": "Solem (BL2IP - Solem Toolkit service)"
+        "service": "Custom services",
+        "solem_toolkit": "Solem BL-IP (Solem Toolkit)",
+        "switch": "Station switches",
+        "solem_toolkit_bl_nr": "Solem BL-NR (Solem Toolkit, 1 station)"
       }
     },
     "weather_provider": {
