@@ -183,9 +183,11 @@ Use this method when using a compatible Solem Bluetooth controller.
 This method delegates irrigation commands to Solem Toolkit.
 
 Choose **Solem BL-IP (Solem Toolkit)** for BL-IP controllers, or
-**Solem BL-NR (Solem Toolkit, single station)** for a BL-NR controller.
-The BL-NR profile requires Solem Toolkit **V1.0.5 or newer** and accepts exactly
-one station in setup and in station-count options.
+**Solem BL-NR (Solem Toolkit)** for a BL-NR controller.
+The BL-NR profile requires Solem Toolkit **V1.0.5 or newer**. Station numbers
+are passed dynamically, just as with BL-IP; the profile does not impose a
+station-count limit. Toolkit V1.0.5 currently implements only station 1 for
+BL-NR, so other stations require additional protocol support in Toolkit.
 
 Both presets configure these actions:
 

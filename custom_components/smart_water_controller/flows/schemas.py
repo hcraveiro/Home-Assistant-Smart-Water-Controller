@@ -190,13 +190,13 @@ def build_action_params_schema(existing_params: list[dict[str, Any]]) -> vol.Sch
     return vol.Schema(schema_dict)
 
 
-def build_num_stations_schema(default_num: int, max_stations: int | None = None) -> vol.Schema:
+def build_num_stations_schema(default_num: int) -> vol.Schema:
     """Build schema for number of stations."""
     return vol.Schema(
         {
             vol.Required(NUM_STATIONS, default=default_num): vol.All(
                 vol.Coerce(int),
-                vol.Range(min=1, max=max_stations) if max_stations is not None else vol.Clamp(min=1),
+                vol.Clamp(min=1),
             )
         }
     )
