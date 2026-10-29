@@ -75,6 +75,8 @@ class IrrigationNotifications:
             self.coordinator.last_irrigation_failure = result
             if station is not None:
                 self.failed_station = station
+                if not self.coordinator._is_switch_control_method():
+                    self.coordinator.stations[station - 1].state = "Failed"
                 if self._failure_task is not None:
                     self._failure_task.cancel()
                 self._failure_task = self.coordinator.hass.async_create_task(
@@ -91,6 +93,9 @@ class IrrigationNotifications:
             await asyncio.sleep(12)
             if self.failed_station == station:
                 self.failed_station = None
+                if not self.coordinator._is_switch_control_method():
+                    if self.coordinator.stations[station - 1].state == "Failed":
+                        self.coordinator.stations[station - 1].state = "Stopped"
                 await self.coordinator.irrigation_runner._publish()
         except asyncio.CancelledError:
             raise
