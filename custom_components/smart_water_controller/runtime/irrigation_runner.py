@@ -216,7 +216,7 @@ class IrrigationRunner:
                 station = session.irrigation.station
                 state = self._switch_state(station)
                 if state != STATE_ON or session.interrupted:
-                    if session.irrigation.source != "automatic":
+                    if session.irrigation.source not in ("automatic", "manual_cycle"):
                         self._generation += 1
                     _LOGGER.error("%s - Station %s (%s) changed to %s during irrigation; stopping session. source=%s, interrupted=%s; automatic recovery will be evaluated after shutdown.",
                                   self.coordinator.controller_mac_address, station,
@@ -225,6 +225,59 @@ class IrrigationRunner:
                     await self._stop_locked([station], "switch no longer confirms ON")
                 else:
                     session.wake.set()
+
+    async def run_manual_cycle(self) -> None:
+        """Run each station for its full monthly configured duration."""
+        if self._closing or self._cycle_running or self._session is not None or self._starting_station is not None:
+            _LOGGER.warning("%s - Run Cycle refused: irrigation is already in progress.",
+                            self.coordinator.controller_mac_address)
+            return
+
+        schedule = self.coordinator.schedule
+        month_config = schedule[dt_util.now().month - 1] if schedule and len(schedule) >= 12 else None
+        if not isinstance(month_config, dict):
+            _LOGGER.warning("%s - Run Cycle refused: no schedule configured for current month.",
+                            self.coordinator.controller_mac_address)
+            return
+
+        configured = month_config.get("stations", {})
+        stations = []
+        for station in self._all_stations():
+            raw_minutes = configured.get(f"station_{station}_minutes", 0)
+            try:
+                minutes = int(raw_minutes)
+            except (ValueError, TypeError):
+                _LOGGER.warning("%s - Run Cycle invalid duration for station %s: %s",
+                                self.coordinator.controller_mac_address, station, raw_minutes)
+                continue
+            if minutes > 0:
+                stations.append((station, minutes))
+        if not stations:
+            _LOGGER.warning("%s - Run Cycle refused: no stations have a positive duration.",
+                            self.coordinator.controller_mac_address)
+            return
+
+        self._cycle_running = True
+        generation = self._generation
+        _LOGGER.info("%s - Run Cycle started: %s",
+                     self.coordinator.controller_mac_address, stations)
+        try:
+            for station, minutes in stations:
+                if self._closing or generation != self._generation:
+                    _LOGGER.warning("%s - Run Cycle cancelled; remaining stations skipped.",
+                                    self.coordinator.controller_mac_address)
+                    return
+                completed = await self.start_irrigation(
+                    station, minutes, source="manual_cycle",
+                    expected_generation=generation,
+                )
+                if not completed:
+                    _LOGGER.warning("%s - Run Cycle interrupted at station %s; remaining stations skipped.",
+                                    self.coordinator.controller_mac_address, station)
+                    return
+            _LOGGER.info("%s - Run Cycle completed.", self.coordinator.controller_mac_address)
+        finally:
+            self._cycle_running = False
 
     async def run_watering_cycle(self, scheduled_hour: str | None = None) -> None:
         """Reject overlapping cycles and abandon a sequence replaced manually."""
@@ -463,7 +516,7 @@ class IrrigationRunner:
         async with self._lock:
             if self._closing or (expected_generation is not None and expected_generation != self._generation):
                 return False
-            if source != "automatic":
+            if source not in ("automatic", "manual_cycle"):
                 self._generation += 1
             if self.coordinator.pending_stop_stations:
                 await self._attempt_pending_stops_locked()
@@ -581,7 +634,7 @@ class IrrigationRunner:
                                         self.coordinator.station_switch_tracker.get_station_switch_entity_id(station),
                                         self._switch_state(station), session.interrupted, session.irrigation.source,
                                         max(0.0, session.deadline - asyncio.get_running_loop().time()))
-                        if session.irrigation.source != "automatic":
+                        if session.irrigation.source not in ("automatic", "manual_cycle"):
                             self._generation += 1
                         await self._stop_locked([station], "switch stopped or became unavailable")
                         return False
