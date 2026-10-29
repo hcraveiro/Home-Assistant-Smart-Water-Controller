@@ -278,6 +278,7 @@ class IrrigationRunner:
         self._stop_all_reported = False
         self._skip_station = None
         generation = self._generation
+        skipped_stations = 0
         _LOGGER.info("%s - Run Cycle started: %s",
                      self.coordinator.controller_mac_address, stations)
         try:
@@ -302,6 +303,7 @@ class IrrigationRunner:
                             return
                         _LOGGER.info("%s - Run Cycle skipped station %s after explicit Stop Station; continuing.",
                                      self.coordinator.controller_mac_address, station)
+                        skipped_stations += 1
                         continue
                     _LOGGER.warning("%s - Run Cycle interrupted at station %s; remaining stations skipped.",
                                     self.coordinator.controller_mac_address, station)
@@ -309,7 +311,8 @@ class IrrigationRunner:
                         await self._report("irrigation_failed", station, "manual_cycle", "Station did not finish watering")
                     return
             _LOGGER.info("%s - Run Cycle completed.", self.coordinator.controller_mac_address)
-            await self._report("cycle_finished", None, "manual_cycle")
+            if not skipped_stations:
+                await self._report("cycle_finished", None, "manual_cycle")
         finally:
             self._cycle_running = False
             self._cycle_source = None
@@ -437,6 +440,7 @@ class IrrigationRunner:
 
         watered_stations = 0
         failed_stations = 0
+        skipped_stations = 0
         for station_key, scheduled_minutes in stations.items():
             try:
                 scheduled_minutes = int(scheduled_minutes)
@@ -541,6 +545,7 @@ class IrrigationRunner:
                             return
                         _LOGGER.info("%s - Scheduled cycle skipping station %s after explicit Stop Station.",
                                      self.coordinator.controller_mac_address, station_id)
+                        skipped_stations += 1
                         break
                     if generation != self._generation or self._closing:
                         _LOGGER.warning("%s - Scheduled cycle explicitly cancelled; remaining stations skipped.",
@@ -565,7 +570,7 @@ class IrrigationRunner:
                                       self.coordinator.controller_mac_address, station_id)
                         failed_stations += 1
                         await self._report("irrigation_failed", station_id, "automatic", "Station failed after retry")
-        if watered_stations and not failed_stations and generation == self._generation and not self._closing:
+        if watered_stations and not failed_stations and not skipped_stations and generation == self._generation and not self._closing:
             await self._report("cycle_finished", None, "automatic")
 
     async def start_irrigation(
