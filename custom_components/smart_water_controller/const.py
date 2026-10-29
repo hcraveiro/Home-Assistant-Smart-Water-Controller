@@ -123,6 +123,7 @@ NOTIFICATIONS_ENABLED = "notifications_enabled"
 NOTIFY_STATION_FINISHED = "notify_station_finished"
 NOTIFY_CYCLE_FINISHED = "notify_cycle_finished"
 NOTIFY_IRRIGATION_FAILED = "notify_irrigation_failed"
+NOTIFY_MANUAL_STOP = "notify_manual_stop"
 NOTIFICATION_TARGETS = "notification_targets"
 
 NOTIFICATION_DEFAULTS = {
@@ -130,5 +131,6 @@ NOTIFICATION_DEFAULTS = {
     NOTIFY_STATION_FINISHED: True,
     NOTIFY_CYCLE_FINISHED: True,
     NOTIFY_IRRIGATION_FAILED: True,
+    NOTIFY_MANUAL_STOP: True,
     NOTIFICATION_TARGETS: [],
 }
