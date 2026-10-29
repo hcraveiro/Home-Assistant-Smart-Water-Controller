@@ -70,6 +70,11 @@ async def async_setup_entry(
             ]
         )
 
+    # One controller-level Run Cycle button per config entry.
+    controller_device = next((device for device in coordinator.data if device.get("device_type") == "ON_BUTTON"), None)
+    if controller_device is not None:
+        buttons.append(IrrigationRunCycleButton(coordinator, controller_device))
+
     # Now create the buttons.
     async_add_entities(buttons)
 
@@ -128,3 +133,25 @@ class ControllerOffButton(SmartWaterControllerButtonEntity):
     async def async_press(self) -> None:
         """Handle the button press."""
         asyncio.create_task(self.coordinator.turn_controller_off())
+
+
+class IrrigationRunCycleButton(SmartWaterControllerButtonEntity):
+    """Run every configured station sequentially, regardless of daily need."""
+
+    _attr_icon = "mdi:play-circle-outline"
+
+    @property
+    def name(self) -> str:
+        return "Run Cycle"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._get_controller_unique_id()}-run-cycle"
+
+    @property
+    def entity_category(self):
+        return None
+
+    async def async_press(self) -> None:
+        """Schedule the entire cycle without blocking the button action."""
+        self.hass.async_create_task(self.coordinator.irrigation_runner.run_manual_cycle())
