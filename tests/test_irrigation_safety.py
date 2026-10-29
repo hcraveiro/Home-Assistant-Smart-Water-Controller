@@ -922,6 +922,33 @@ class NotificationOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.c.last_irrigation_failure)
         self.assertEqual(self.c.last_irrigation_result["result"], "cancelled")
 
+    async def test_notification_uses_translation_catalog_not_python_message(self):
+        self.c.config_entry.options = {
+            "notifications_enabled": True,
+            "notify_manual_stop": True,
+            "notification_targets": [
+                "notify.mobile_app_xiaomi_redmi_note_14_pro_henrique",
+            ],
+        }
+        async def translated_catalog(hass, language, category, integrations):
+            self.assertEqual(category, "common")
+            self.assertEqual(integrations, {"smart_water_controller"})
+            return {
+                "component.smart_water_controller.common.notification_title": "Water alert",
+                "component.smart_water_controller.common.notification_station_stopped":
+                    "Station {station} was stopped by the user.",
+            }
+
+        with patch("homeassistant.helpers.translation.async_get_translations",
+                   side_effect=translated_catalog):
+            await self.c.irrigation_notifications.report(
+                "station_stopped", station=2, source="manual",
+            )
+        self.assertEqual(self.c.hass.services.calls[0][2], {
+            "title": "Water alert",
+            "message": "Station Zone 2 was stopped by the user.",
+        })
+
     async def test_disabled_manual_stop_subtype_sends_no_notification(self):
         self.c.config_entry.options = {
             "notifications_enabled": True,
