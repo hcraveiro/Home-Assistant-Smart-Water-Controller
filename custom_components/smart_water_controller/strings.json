@@ -134,13 +134,14 @@
       },
       "notifications": {
         "title": "Irrigation notifications",
-        "description": "Optional mobile notifications for irrigation events. Messages are predefined. Notifications are off by default.",
+        "description": "Optional notifications for completed stations, cycles, failures, and intentional manual stops. Messages are predefined and notifications are off by default.",
         "data": {
           "notifications_enabled": "Enable notifications",
           "notify_station_finished": "Station watering finished",
           "notify_cycle_finished": "Manual or scheduled cycle finished",
           "notify_irrigation_failed": "Irrigation failed",
-          "notification_targets": "Mobile devices"
+          "notification_targets": "Mobile devices",
+          "notify_manual_stop": "Irrigation manually stopped"
         },
         "data_description": {
           "notification_targets": "Select the mobile app recipients. Available devices are discovered from notify.mobile_app_* services."
@@ -260,13 +261,14 @@
       },
       "notifications": {
         "title": "Irrigation notifications",
-        "description": "Choose event types and mobile devices. Notifications are disabled unless enabled here.",
+        "description": "Choose station completion, cycle completion, failures, manual stops, and mobile recipients. Notifications are disabled unless enabled here.",
         "data": {
           "notifications_enabled": "Enable notifications",
           "notify_station_finished": "Station watering finished",
           "notify_cycle_finished": "Manual or scheduled cycle finished",
           "notify_irrigation_failed": "Irrigation failed",
-          "notification_targets": "Mobile devices"
+          "notification_targets": "Mobile devices",
+          "notify_manual_stop": "Irrigation manually stopped"
         },
         "data_description": {
           "notification_targets": "Select the mobile app recipients. Available devices are discovered from notify.mobile_app_* services."
