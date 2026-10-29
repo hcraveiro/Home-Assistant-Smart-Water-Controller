@@ -60,6 +60,27 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
         restored = self.storage._state_from_storage(saved)
         self.assertEqual(restored.pending_stop_stations, [2])
 
+    def test_daily_duration_counters_survive_persistence_round_trip(self):
+        state = self.storage._default_state()
+        state.sprinkle_duration_today_seconds = [203.25, 600.0]
+        saved = self.storage._state_to_storage(state)
+        restored = self.storage._state_from_storage(saved)
+        self.assertEqual(restored.sprinkle_duration_today_seconds, [203.25, 600.0])
+
+    def test_legacy_storage_without_daily_duration_defaults_to_zero(self):
+        saved = self.storage._state_to_storage(self.storage._default_state())
+        saved.pop("sprinkle_duration_today_seconds")
+        restored = self.storage._state_from_storage(saved)
+        self.assertEqual(restored.sprinkle_duration_today_seconds, [0.0, 0.0])
+
+    async def test_daily_duration_changes_trigger_persistence(self):
+        state = self.storage._default_state()
+        self.storage._store.async_save = AsyncMock()
+        await self.storage.async_save(state)
+        state.sprinkle_duration_today_seconds[0] += 12.5
+        await self.storage.async_save(state)
+        self.assertEqual(self.storage._store.async_save.await_count, 2)
+
     def test_short_legacy_arrays_default_to_station_count(self):
         saved = self.storage._state_to_storage(self.storage._default_state())
         saved["water_flow_rate"] = [7]
