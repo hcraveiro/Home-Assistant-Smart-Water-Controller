@@ -91,6 +91,7 @@ class Coordinator:
         self.water_flow_rate = [21, 21, 21]
         self.station_areas = [50, 50, 50]
         self.sprinkle_total_amount_today = [0., 0., 0.]
+        self.sprinkle_duration_today_seconds = [0., 0., 0.]
         self.sprinkle_target_amount_today = [4.2, 4.2, 4.2]
         self.total_water_consumption = 0.
         self.rain_total_amount_forecasted_today = 0.
