@@ -13,6 +13,7 @@ from ..const import (
     NOTIFY_STATION_FINISHED,
     NOTIFY_CYCLE_FINISHED,
     NOTIFY_IRRIGATION_FAILED,
+    NOTIFY_MANUAL_STOP,
     NOTIFICATION_TARGETS,
     NOTIFICATION_DEFAULTS,
 )
@@ -47,6 +48,7 @@ def notification_schema(settings: dict[str, Any], services: list[str]) -> vol.Sc
             vol.Optional(NOTIFY_STATION_FINISHED, default=bool(settings.get(NOTIFY_STATION_FINISHED, True))): selector({"boolean": {}}),
             vol.Optional(NOTIFY_CYCLE_FINISHED, default=bool(settings.get(NOTIFY_CYCLE_FINISHED, True))): selector({"boolean": {}}),
             vol.Optional(NOTIFY_IRRIGATION_FAILED, default=bool(settings.get(NOTIFY_IRRIGATION_FAILED, True))): selector({"boolean": {}}),
+            vol.Optional(NOTIFY_MANUAL_STOP, default=bool(settings.get(NOTIFY_MANUAL_STOP, True))): selector({"boolean": {}}),
             vol.Optional(NOTIFICATION_TARGETS, default=selected): selector(
                 {"select": {"options": [{"value": name, "label": name} for name in services], "multiple": True, "mode": "dropdown"}}
             ),
@@ -57,7 +59,7 @@ def notification_schema(settings: dict[str, Any], services: list[str]) -> vol.Sc
 def parse_notification_settings(user_input: dict[str, Any], available: list[str]) -> tuple[dict[str, Any], dict[str, str]]:
     """Validate recipients without allowing arbitrary service calls."""
     result = {key: bool(user_input.get(key, NOTIFICATION_DEFAULTS[key]))
-              for key in (NOTIFICATIONS_ENABLED, NOTIFY_STATION_FINISHED, NOTIFY_CYCLE_FINISHED, NOTIFY_IRRIGATION_FAILED)}
+              for key in (NOTIFICATIONS_ENABLED, NOTIFY_STATION_FINISHED, NOTIFY_CYCLE_FINISHED, NOTIFY_IRRIGATION_FAILED, NOTIFY_MANUAL_STOP)}
     targets = user_input.get(NOTIFICATION_TARGETS, [])
     if not isinstance(targets, list):
         return result, {NOTIFICATION_TARGETS: "invalid_targets"}
