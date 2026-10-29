@@ -14,7 +14,7 @@ from custom_components.smart_water_controller.flows.notifications import (
 )
 from custom_components.smart_water_controller.const import (
     NOTIFICATIONS_ENABLED, NOTIFY_STATION_FINISHED,
-    NOTIFY_CYCLE_FINISHED, NOTIFY_IRRIGATION_FAILED, NOTIFICATION_TARGETS,
+    NOTIFY_CYCLE_FINISHED, NOTIFY_IRRIGATION_FAILED, NOTIFY_MANUAL_STOP, NOTIFICATION_TARGETS,
 )
 
 PHONE1 = "notify.mobile_app_xiaomi_redmi_note_14_pro_henrique"
@@ -42,6 +42,7 @@ class NotificationFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(screen["step_id"], "notifications")
             self.assertTrue(screen["last_step"])
             self.assertFalse(screen["data_schema"]({})[NOTIFICATIONS_ENABLED])
+            self.assertTrue(screen["data_schema"]({})[NOTIFY_MANUAL_STOP])
 
             complete = await flow.async_step_notifications({})
             self.assertEqual(complete["type"], "create_entry")
@@ -60,11 +61,13 @@ class NotificationFlowTests(unittest.IsolatedAsyncioTestCase):
                 NOTIFY_STATION_FINISHED: False,
                 NOTIFY_CYCLE_FINISHED: True,
                 NOTIFY_IRRIGATION_FAILED: True,
+                NOTIFY_MANUAL_STOP: False,
                 NOTIFICATION_TARGETS: [PHONE1, PHONE2],
             })
             self.assertEqual(complete["type"], "create_entry")
             self.assertEqual(complete["data"][NOTIFICATION_TARGETS], [PHONE1, PHONE2])
             self.assertFalse(complete["data"][NOTIFY_STATION_FINISHED])
+            self.assertFalse(complete["data"][NOTIFY_MANUAL_STOP])
 
     async def test_options_can_be_edited_without_recreating_entry(self):
         entry = SimpleNamespace(data={}, options={})
@@ -80,11 +83,13 @@ class NotificationFlowTests(unittest.IsolatedAsyncioTestCase):
                 NOTIFY_STATION_FINISHED: True,
                 NOTIFY_CYCLE_FINISHED: False,
                 NOTIFY_IRRIGATION_FAILED: True,
+                NOTIFY_MANUAL_STOP: True,
                 NOTIFICATION_TARGETS: [PHONE1],
             })
         self.assertEqual(saved["type"], "create_entry")
         self.assertTrue(saved["data"][NOTIFICATIONS_ENABLED])
         self.assertFalse(saved["data"][NOTIFY_CYCLE_FINISHED])
+        self.assertTrue(saved["data"][NOTIFY_MANUAL_STOP])
         self.assertEqual(saved["data"][NOTIFICATION_TARGETS], [PHONE1])
 
     def test_only_real_mobile_services_are_available(self):
