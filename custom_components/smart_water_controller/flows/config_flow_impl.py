@@ -500,6 +500,7 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                     self.hass.config_entries.async_update_entry(
                         self._reconfigure_entry,
                         data=self._input_data,
+                        options={**self._reconfigure_entry.options, **notifications},
                         title=title,
                     )
                     await self.hass.config_entries.async_reload(self._reconfigure_entry.entry_id)
