@@ -16,7 +16,9 @@
       "unknown": "Unexpected error",
       "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
       "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
-      "duplicate_parameter": "Parameter names must be unique within an action."
+      "duplicate_parameter": "Parameter names must be unique within an action.",
+      "target_required": "Select at least one mobile device to enable notifications.",
+      "invalid_targets": "Select only registered mobile app notification services."
     },
     "step": {
       "user": {
@@ -72,40 +74,40 @@
       },
       "lawn_areas": {
         "title": "Lawn Areas configuration",
-        "description": "Please provide a name and the size in square meters (m\u00b2) for each station.",
+        "description": "Please provide a name and the size in square meters (m²) for each station.",
         "data": {
           "station_1_name": "Station 1 Name",
-          "station_1_area": "Station 1 Area (m\u00b2)",
+          "station_1_area": "Station 1 Area (m²)",
           "station_2_name": "Station 2 Name",
-          "station_2_area": "Station 2 Area (m\u00b2)",
+          "station_2_area": "Station 2 Area (m²)",
           "station_3_name": "Station 3 Name",
-          "station_3_area": "Station 3 Area (m\u00b2)",
+          "station_3_area": "Station 3 Area (m²)",
           "station_4_name": "Station 4 Name",
-          "station_4_area": "Station 4 Area (m\u00b2)",
+          "station_4_area": "Station 4 Area (m²)",
           "station_5_name": "Station 5 Name",
-          "station_5_area": "Station 5 Area (m\u00b2)",
+          "station_5_area": "Station 5 Area (m²)",
           "station_6_name": "Station 6 Name",
-          "station_6_area": "Station 6 Area (m\u00b2)",
+          "station_6_area": "Station 6 Area (m²)",
           "station_7_name": "Station 7 Name",
-          "station_7_area": "Station 7 Area (m\u00b2)",
+          "station_7_area": "Station 7 Area (m²)",
           "station_8_name": "Station 8 Name",
-          "station_8_area": "Station 8 Area (m\u00b2)",
+          "station_8_area": "Station 8 Area (m²)",
           "station_9_name": "Station 9 Name",
-          "station_9_area": "Station 9 Area (m\u00b2)",
+          "station_9_area": "Station 9 Area (m²)",
           "station_10_name": "Station 10 Name",
-          "station_10_area": "Station 10 Area (m\u00b2)",
+          "station_10_area": "Station 10 Area (m²)",
           "station_11_name": "Station 11 Name",
-          "station_11_area": "Station 11 Area (m\u00b2)",
+          "station_11_area": "Station 11 Area (m²)",
           "station_12_name": "Station 12 Name",
-          "station_12_area": "Station 12 Area (m\u00b2)",
+          "station_12_area": "Station 12 Area (m²)",
           "station_13_name": "Station 13 Name",
-          "station_13_area": "Station 13 Area (m\u00b2)",
+          "station_13_area": "Station 13 Area (m²)",
           "station_14_name": "Station 14 Name",
-          "station_14_area": "Station 14 Area (m\u00b2)",
+          "station_14_area": "Station 14 Area (m²)",
           "station_15_name": "Station 15 Name",
-          "station_15_area": "Station 15 Area (m\u00b2)",
+          "station_15_area": "Station 15 Area (m²)",
           "station_16_name": "Station 16 Name",
-          "station_16_area": "Station 16 Area (m\u00b2)"
+          "station_16_area": "Station 16 Area (m²)"
         }
       },
       "location": {
@@ -129,6 +131,20 @@
           "soil_moisture_sensor": "Soil Moisture Sensor",
           "soil_moisture_threshold": "Soil Moisture Threshold (%)"
         }
+      },
+      "notifications": {
+        "title": "Irrigation notifications",
+        "description": "Optional mobile notifications for irrigation events. Messages are predefined. Notifications are off by default.",
+        "data": {
+          "notifications_enabled": "Enable notifications",
+          "notify_station_finished": "Station watering finished",
+          "notify_cycle_finished": "Manual or scheduled cycle finished",
+          "notify_irrigation_failed": "Irrigation failed",
+          "notification_targets": "Mobile devices"
+        },
+        "data_description": {
+          "notification_targets": "Select the mobile app recipients. Available devices are discovered from notify.mobile_app_* services."
+        }
       }
     }
   },
@@ -144,7 +160,8 @@
           "num_stations": "Number of stations",
           "lawn_areas": "Lawn areas configuration",
           "weather": "Weather",
-          "soil_moisture": "Soil Moisture Sensor"
+          "soil_moisture": "Soil Moisture Sensor",
+          "notifications": "Notifications"
         }
       },
       "basic_data": {
@@ -189,40 +206,40 @@
       },
       "lawn_areas": {
         "title": "Lawn Areas configuration",
-        "description": "Please provide a name and the size in square meters (m\u00b2) for each station.",
+        "description": "Please provide a name and the size in square meters (m²) for each station.",
         "data": {
           "station_1_name": "Station 1 Name",
-          "station_1_area": "Station 1 Area (m\u00b2)",
+          "station_1_area": "Station 1 Area (m²)",
           "station_2_name": "Station 2 Name",
-          "station_2_area": "Station 2 Area (m\u00b2)",
+          "station_2_area": "Station 2 Area (m²)",
           "station_3_name": "Station 3 Name",
-          "station_3_area": "Station 3 Area (m\u00b2)",
+          "station_3_area": "Station 3 Area (m²)",
           "station_4_name": "Station 4 Name",
-          "station_4_area": "Station 4 Area (m\u00b2)",
+          "station_4_area": "Station 4 Area (m²)",
           "station_5_name": "Station 5 Name",
-          "station_5_area": "Station 5 Area (m\u00b2)",
+          "station_5_area": "Station 5 Area (m²)",
           "station_6_name": "Station 6 Name",
-          "station_6_area": "Station 6 Area (m\u00b2)",
+          "station_6_area": "Station 6 Area (m²)",
           "station_7_name": "Station 7 Name",
-          "station_7_area": "Station 7 Area (m\u00b2)",
+          "station_7_area": "Station 7 Area (m²)",
           "station_8_name": "Station 8 Name",
-          "station_8_area": "Station 8 Area (m\u00b2)",
+          "station_8_area": "Station 8 Area (m²)",
           "station_9_name": "Station 9 Name",
-          "station_9_area": "Station 9 Area (m\u00b2)",
+          "station_9_area": "Station 9 Area (m²)",
           "station_10_name": "Station 10 Name",
-          "station_10_area": "Station 10 Area (m\u00b2)",
+          "station_10_area": "Station 10 Area (m²)",
           "station_11_name": "Station 11 Name",
-          "station_11_area": "Station 11 Area (m\u00b2)",
+          "station_11_area": "Station 11 Area (m²)",
           "station_12_name": "Station 12 Name",
-          "station_12_area": "Station 12 Area (m\u00b2)",
+          "station_12_area": "Station 12 Area (m²)",
           "station_13_name": "Station 13 Name",
-          "station_13_area": "Station 13 Area (m\u00b2)",
+          "station_13_area": "Station 13 Area (m²)",
           "station_14_name": "Station 14 Name",
-          "station_14_area": "Station 14 Area (m\u00b2)",
+          "station_14_area": "Station 14 Area (m²)",
           "station_15_name": "Station 15 Name",
-          "station_15_area": "Station 15 Area (m\u00b2)",
+          "station_15_area": "Station 15 Area (m²)",
           "station_16_name": "Station 16 Name",
-          "station_16_area": "Station 16 Area (m\u00b2)"
+          "station_16_area": "Station 16 Area (m²)"
         }
       },
       "weather": {
@@ -240,13 +257,29 @@
           "soil_moisture_sensor": "Soil Moisture Sensor",
           "soil_moisture_threshold": "Soil Moisture Threshold (%)"
         }
+      },
+      "notifications": {
+        "title": "Irrigation notifications",
+        "description": "Choose event types and mobile devices. Notifications are disabled unless enabled here.",
+        "data": {
+          "notifications_enabled": "Enable notifications",
+          "notify_station_finished": "Station watering finished",
+          "notify_cycle_finished": "Manual or scheduled cycle finished",
+          "notify_irrigation_failed": "Irrigation failed",
+          "notification_targets": "Mobile devices"
+        },
+        "data_description": {
+          "notification_targets": "Select the mobile app recipients. Available devices are discovered from notify.mobile_app_* services."
+        }
       }
     },
     "error": {
       "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
       "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
       "duplicate_parameter": "Parameter names must be unique within an action.",
-      "mac_required": "Solem profiles require a MAC address in at least one enabled action parameter of type MAC address."
+      "mac_required": "Solem profiles require a MAC address in at least one enabled action parameter of type MAC address.",
+      "target_required": "Select at least one mobile device to enable notifications.",
+      "invalid_targets": "Select only registered mobile app notification services."
     }
   },
   "selector": {
