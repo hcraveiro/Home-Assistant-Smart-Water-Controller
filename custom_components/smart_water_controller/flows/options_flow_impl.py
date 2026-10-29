@@ -30,6 +30,7 @@ from ..const import (
     WEATHER_PROVIDER,
     WEATHER_PROVIDER_NONE,
 )
+from .notifications import available_mobile_services, notification_schema, parse_notification_settings, current_settings
 from .schemas import (
     build_action_params_schema,
     build_basic_data_schema,
@@ -77,7 +78,7 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
         else:
             menu_options.append("services")
 
-        menu_options.extend(["weather", "soil_moisture"])
+        menu_options.extend(["weather", "soil_moisture", "notifications"])
 
         return self.async_show_menu(
             step_id="init",
@@ -395,5 +396,25 @@ class SmartWaterControllerOptionsFlowHandler(OptionsFlow):
         return self.async_show_form(
             step_id="station_switches",
             data_schema=build_station_switches_schema(num_stations, existing),
+            errors=errors,
+        )
+
+    async def async_step_notifications(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Edit mobile notifications without repeating the full setup flow."""
+        settings = current_settings(self._config_entry)
+        services = available_mobile_services(self.hass, settings.get("notification_targets", []))
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            notifications, errors = parse_notification_settings(user_input, services)
+            if not errors:
+                return self.async_create_entry(
+                    title="",
+                    data={**self._config_entry.options, **notifications},
+                )
+        return self.async_show_form(
+            step_id="notifications",
+            data_schema=notification_schema(user_input or settings, services),
             errors=errors,
         )
