@@ -48,6 +48,23 @@ class Store:
 
 
 module('homeassistant.helpers.storage', Store=Store)
+
+
+async def async_get_translations(hass, language, category, integrations):
+    """Read the shipped English catalog to verify real message templates."""
+    import json
+    component = json.loads(
+        (ROOT / 'custom_components/smart_water_controller/translations/en.json').read_text()
+    )
+    if category != 'common' or 'smart_water_controller' not in integrations:
+        return {}
+    return {
+        f'component.smart_water_controller.common.{key}': value
+        for key, value in component.get('common', {}).items()
+    }
+
+
+module('homeassistant.helpers.translation', async_get_translations=async_get_translations)
 module('homeassistant.helpers.aiohttp_client', async_get_clientsession=lambda hass: None)
 
 
