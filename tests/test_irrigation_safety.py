@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock, call
 
 import ha_stub
 from homeassistant.util import dt as dt_util
@@ -584,6 +584,53 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(('service_on', 1, 5), self.c.api.commands)
         # Not latched by a failure: the next run tries again.
         self.assertFalse(self.runner._controller_on_confirmed)
+
+    async def test_manual_cycle_notifies_stations_and_cycle_only_on_success(self):
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .02
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+                await self.runner.run_manual_cycle()
+
+        self.assertEqual(
+            [entry.args[:3] for entry in report.await_args_list],
+            [("station_finished", 1, "manual_cycle"),
+             ("station_finished", 2, "manual_cycle"),
+             ("station_finished", 3, "manual_cycle"),
+             ("cycle_finished", None, "manual_cycle")],
+        )
+
+    async def test_cancelled_manual_cycle_sends_no_success_or_failure(self):
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .2
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+                task = asyncio.create_task(self.runner.run_manual_cycle())
+                await self.wait_for(lambda: self.runner._session is not None)
+                await self.runner.stop_irrigation()
+                await task
+        report.assert_not_awaited()
+
+    async def test_scheduled_failure_after_all_retries_notifies_once(self):
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            with patch.object(self.runner, "start_irrigation", new_callable=AsyncMock, return_value=False):
+                with patch.object(runtime.asyncio, "sleep", new_callable=AsyncMock):
+                    await self.runner.run_watering_cycle("08:00:00")
+        failures = [entry for entry in report.await_args_list
+                    if entry.args[0] == "irrigation_failed"]
+        self.assertGreaterEqual(len(failures), 1)
+        self.assertEqual(
+            [entry.args[0] for entry in report.await_args_list].count("cycle_finished"), 0,
+        )
+        self.assertEqual(len(failures), len({entry.args[1] for entry in failures}))
 
     async def test_stop_abandons_rest_of_scheduled_sequence(self):
         async def short_start(*args, **kwargs):
