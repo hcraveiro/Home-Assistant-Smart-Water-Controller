@@ -55,6 +55,7 @@ async def async_setup_entry(
     button_types = [
         ButtonTypeClass("SPRINKLE_BUTTON", IrrigationStartButton),
         ButtonTypeClass("STOP_BUTTON", IrrigationStopButton),
+        ButtonTypeClass("STOP_STATION_BUTTON", IrrigationStopStationButton),
         ButtonTypeClass("ON_BUTTON", ControllerOnButton),
         ButtonTypeClass("OFF_BUTTON", ControllerOffButton),
     ]
@@ -111,6 +112,15 @@ class IrrigationStopButton(SmartWaterControllerButtonEntity):
     async def async_press(self) -> None:
         """Handle the button press."""
         asyncio.create_task(self.coordinator.stop_irrigation())
+
+class IrrigationStopStationButton(SmartWaterControllerButtonEntity):
+    """Stop only the active station, without cancelling the remaining cycle."""
+
+    async def async_press(self) -> None:
+        """Stop the named station; the runner manages sequential continuation."""
+        station = int(self.device_id.rsplit("_", 1)[-1])
+        self.hass.async_create_task(self.coordinator.stop_station(station))
+
 
 class ControllerOnButton(SmartWaterControllerButtonEntity):
     """Button entity to manually stop irrigation."""
