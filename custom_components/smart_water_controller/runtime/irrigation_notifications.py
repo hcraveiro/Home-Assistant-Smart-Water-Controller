@@ -126,20 +126,43 @@ class IrrigationNotifications:
         settings = self.settings
         if not settings[NOTIFICATIONS_ENABLED] or not settings.get(EVENT_OPTIONS[event], False):
             return
-        if event == "station_finished":
-            message = f"Sprinkling finished on station {station_name}."
-        elif event == "cycle_finished":
-            kind = "Scheduled" if source == "automatic" else "Manual"
-            message = f"{kind} cycle finished on {self.controller_name}."
-        elif event == "station_stopped":
-            message = f"Sprinkling manually stopped on station {station_name}."
-        elif event == "cycle_stopped":
-            kind = "Scheduled" if source == "automatic" else "Manual"
-            message = f"{kind} cycle stopped on {self.controller_name}."
-        elif event == "all_stopped":
-            message = f"All irrigation manually stopped on {self.controller_name}."
-        else:
-            message = f"Sprinkling failed on {station_name or self.controller_name}."
+        # Custom integrations ship translations/en.json. Home Assistant resolves
+        # the common catalog in its configured language with English fallback.
+        from homeassistant.helpers.translation import async_get_translations
+
+        keys = {
+            "station_finished": "notification_station_finished",
+            "cycle_finished": (
+                "notification_cycle_finished_scheduled"
+                if source == "automatic" else "notification_cycle_finished_manual"
+            ),
+            "irrigation_failed": "notification_irrigation_failed",
+            "station_stopped": "notification_station_stopped",
+            "cycle_stopped": (
+                "notification_cycle_stopped_scheduled"
+                if source == "automatic" else "notification_cycle_stopped_manual"
+            ),
+            "all_stopped": "notification_all_stopped",
+        }
+        domain = "smart_water_controller"
+        language = getattr(getattr(self.coordinator.hass, "config", None), "language", "en")
+        try:
+            catalog = await async_get_translations(
+                self.coordinator.hass, language, "common", {domain}
+            )
+            prefix = f"component.{domain}.common."
+            placeholders = {
+                "station": station_name or self.controller_name,
+                "controller": self.controller_name,
+            }
+            message = catalog[f"{prefix}{keys[event]}"].format(**placeholders)
+            title = catalog[f"{prefix}notification_title"]
+        except (KeyError, ValueError, TypeError):
+            _LOGGER.exception("Irrigation notification translation is unavailable or invalid.")
+            return
+        except Exception:
+            _LOGGER.exception("Could not load irrigation notification translations.")
+            return
 
         for service_id in dict.fromkeys(settings.get(NOTIFICATION_TARGETS, [])):
             if not isinstance(service_id, str) or not service_id.startswith("notify.mobile_app_"):
@@ -151,7 +174,7 @@ class IrrigationNotifications:
             try:
                 await self.coordinator.hass.services.async_call(
                     "notify", service_name,
-                    {"title": "Irrigation", "message": message},
+                    {"title": title, "message": message},
                     blocking=False,
                 )
             except Exception:
