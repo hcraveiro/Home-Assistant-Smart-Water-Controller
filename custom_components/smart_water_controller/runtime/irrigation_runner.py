@@ -46,6 +46,7 @@ class IrrigationRunner:
         self._session: _Session | None = None
         self._generation = 0
         self._cycle_running = False
+        self._skip_station: int | None = None
         self._retry_task: asyncio.Task | None = None
         self._workers: set[asyncio.Task] = set()
         self._closing = False
@@ -258,6 +259,7 @@ class IrrigationRunner:
             return
 
         self._cycle_running = True
+        self._skip_station = None
         generation = self._generation
         _LOGGER.info("%s - Run Cycle started: %s",
                      self.coordinator.controller_mac_address, stations)
@@ -272,6 +274,18 @@ class IrrigationRunner:
                     expected_generation=generation,
                 )
                 if not completed:
+                    if self._skip_station == station and generation == self._generation:
+                        self._skip_station = None
+                        if self.coordinator.pending_stop_stations or (
+                            self.coordinator._is_switch_control_method()
+                            and any(self._switch_state(i) != STATE_OFF for i in self._all_stations())
+                        ):
+                            _LOGGER.error("%s - Stop Station %s could not confirm shutdown; Run Cycle aborted.",
+                                          self.coordinator.controller_mac_address, station)
+                            return
+                        _LOGGER.info("%s - Run Cycle skipped station %s after explicit Stop Station; continuing.",
+                                     self.coordinator.controller_mac_address, station)
+                        continue
                     _LOGGER.warning("%s - Run Cycle interrupted at station %s; remaining stations skipped.",
                                     self.coordinator.controller_mac_address, station)
                     return
@@ -285,6 +299,7 @@ class IrrigationRunner:
             _LOGGER.warning("%s - Skipping overlapping scheduled cycle.", self.coordinator.controller_mac_address)
             return
         self._cycle_running = True
+        self._skip_station = None
         generation = self._generation
         try:
             await self._run_watering_cycle(scheduled_hour, generation)
@@ -484,6 +499,18 @@ class IrrigationRunner:
                     )
                     if completed:
                         break
+                    if self._skip_station == station_id and generation == self._generation:
+                        self._skip_station = None
+                        if self.coordinator.pending_stop_stations or (
+                            self.coordinator._is_switch_control_method()
+                            and any(self._switch_state(i) != STATE_OFF for i in self._all_stations())
+                        ):
+                            _LOGGER.error("%s - Stop Station %s could not confirm shutdown; scheduled cycle aborted.",
+                                          self.coordinator.controller_mac_address, station_id)
+                            return
+                        _LOGGER.info("%s - Scheduled cycle skipping station %s after explicit Stop Station.",
+                                     self.coordinator.controller_mac_address, station_id)
+                        break
                     if generation != self._generation or self._closing:
                         _LOGGER.warning("%s - Scheduled cycle explicitly cancelled; remaining stations skipped.",
                                         self.coordinator.controller_mac_address)
@@ -661,11 +688,32 @@ class IrrigationRunner:
                     await self._stop_locked([station], "session worker failed")
             return False
 
+    async def stop_station(self, station: int) -> bool:
+        """Stop only the active station and advance a running cycle safely."""
+        async with self._lock:
+            session = self._session
+            if self._closing or session is None or session.irrigation.station != station:
+                _LOGGER.warning("%s - Stop Station ignored: station %s is not active.",
+                                self.coordinator.controller_mac_address, station)
+                return False
+
+            is_cycle = self._cycle_running and session.irrigation.source in ("automatic", "manual_cycle")
+            if is_cycle:
+                self._skip_station = station
+            else:
+                self._generation += 1
+            stopped = await self._stop_locked([station], "stop station requested")
+            if not stopped:
+                _LOGGER.error("%s - Stop Station %s shutdown unconfirmed; next station will not start.",
+                              self.coordinator.controller_mac_address, station)
+            return stopped
+
     async def stop_irrigation(self) -> bool:
-        """Explicit stop cancels the entire scheduled sequence too."""
+        """Explicit Stop All cancels the entire scheduled or manual sequence."""
         async with self._lock:
             self._generation += 1
-            return await self._stop_locked(self._all_stations(), "stop requested")
+            self._skip_station = None
+            return await self._stop_locked(self._all_stations(), "stop all requested")
 
     async def async_close(self) -> None:
         """Stop before unloading and dispose of all worker/retry tasks."""
