@@ -731,7 +731,7 @@ If the external irrigation controller automatically turns off a station after it
 
 ---
 
-## Irrigation Outcomes and Optional Notifications (V1.1.6b4)
+## Irrigation Outcomes and Optional Notifications (V1.1.6b5)
 
 Irrigation failures are now visible without reading the Home Assistant log.
 
@@ -765,8 +765,12 @@ A configuration without recipients is rejected when notifications are enabled.
 | Manual Run Cycle completed | `Manual cycle finished on Rainbird.` |
 | Scheduled cycle completed | `Scheduled cycle finished on Rainbird.` |
 | Irrigation failed definitively | `Sprinkling failed on Front Lawn 1.` |
+| Manual Stop on a station (individual watering or cycle) | `Sprinkling manually stopped on station Front Lawn 1.` |
+| Stop All on a manual cycle | `Manual cycle stopped on Rainbird.` |
+| Stop All on a scheduled cycle | `Scheduled cycle stopped on Rainbird.` |
+| Stop All during standalone watering | `All irrigation manually stopped on Rainbird.` |
 
-The three subscriptions can be switched on/off separately. They default to
+The four subscriptions can be switched on/off separately. They default to
 enabled *within* the notifications setup, but the **master switch defaults to off**;
 no messages are sent until notification recipients are selected and notifications
 are explicitly enabled. Message wording is fixed and not editable.
@@ -774,8 +778,17 @@ are explicitly enabled. Message wording is fixed and not editable.
 Only a successfully finished station run raises *Station watering completed*.
 Only cycles that ran and completed successfully raise *Cycle completed*.
 A failure is reported after the scheduled recovery attempt is exhausted,
-rather than on a transient retry. A manual cancellation does not trigger
-success or failure notifications.
+rather than on a transient retry. A confirmed intentional station Stop or
+Stop All produces an independent **Irrigation manually stopped** notification
+when enabled. It does not trigger success or failure notifications.
+Duplicate Stop All requests without a new run are ignored for notifications.
+If a station is manually skipped, the cycle will not send a misleading
+*Cycle completed* notification.
+
+Notification messages are maintained in `strings.json` and shipped in
+`translations/en.json` under `common` translation keys, with runtime
+placeholders for station and controller names. The integration reads the
+Home Assistant translation catalog; text is fixed rather than editable.
 
 ## Active Irrigation Tracking and Restart Safety
 
