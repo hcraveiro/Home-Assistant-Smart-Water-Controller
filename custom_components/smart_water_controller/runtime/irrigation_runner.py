@@ -65,6 +65,12 @@ class IrrigationRunner:
     def _all_stations(self) -> list[int]:
         return list(range(1, self.coordinator.num_stations + 1))
 
+    async def _report(self, event: str, station: int | None, source: str, reason: str | None = None) -> None:
+        """Report final irrigation outcomes when supported by the coordinator."""
+        notifier = getattr(self.coordinator, "irrigation_notifications", None)
+        if notifier is not None:
+            await notifier.report(event, station=station, source=source, reason=reason)
+
     async def _publish(self) -> None:
         if self.coordinator._is_switch_control_method():
             for station in self._all_stations():
@@ -227,6 +233,8 @@ class IrrigationRunner:
                                   self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), state,
                                   session.irrigation.source, session.interrupted)
                     await self._stop_locked([station], "switch no longer confirms ON")
+                    if session.irrigation.source == "manual":
+                        await self._report("irrigation_failed", station, "manual", "Station switch changed to OFF unexpectedly")
                 else:
                     session.wake.set()
 
@@ -291,8 +299,11 @@ class IrrigationRunner:
                         continue
                     _LOGGER.warning("%s - Run Cycle interrupted at station %s; remaining stations skipped.",
                                     self.coordinator.controller_mac_address, station)
+                    if generation == self._generation and not self._closing:
+                        await self._report("irrigation_failed", station, "manual_cycle", "Station did not finish watering")
                     return
             _LOGGER.info("%s - Run Cycle completed.", self.coordinator.controller_mac_address)
+            await self._report("cycle_finished", None, "manual_cycle")
         finally:
             self._cycle_running = False
 
@@ -411,6 +422,8 @@ class IrrigationRunner:
 
         expected_rain_today_mm = self.coordinator.rain_total_amount_forecasted_today
 
+        watered_stations = 0
+        failed_stations = 0
         for station_key, scheduled_minutes in stations.items():
             try:
                 scheduled_minutes = int(scheduled_minutes)
@@ -501,6 +514,7 @@ class IrrigationRunner:
                         expected_generation=generation, run_seconds=remaining_seconds,
                     )
                     if completed:
+                        watered_stations += 1
                         break
                     if self._skip_station == station_id and generation == self._generation:
                         self._skip_station = None
@@ -510,6 +524,7 @@ class IrrigationRunner:
                         ):
                             _LOGGER.error("%s - Stop Station %s could not confirm shutdown; scheduled cycle aborted.",
                                           self.coordinator.controller_mac_address, station_id)
+                            await self._report("irrigation_failed", station_id, "automatic", "Station shutdown was not confirmed")
                             return
                         _LOGGER.info("%s - Scheduled cycle skipping station %s after explicit Stop Station.",
                                      self.coordinator.controller_mac_address, station_id)
@@ -519,12 +534,14 @@ class IrrigationRunner:
                                         self.coordinator.controller_mac_address)
                         return
                     if not self.coordinator._is_switch_control_method():
+                        await self._report("irrigation_failed", station_id, "automatic", "Station watering command failed")
                         return
                     if self.coordinator.pending_stop_stations or any(
                         self._switch_state(i) != STATE_OFF for i in self._all_stations()
                     ):
                         _LOGGER.error("%s - Station %s interrupted; shutdown not confirmed. Remaining stations skipped for safety. pending_stops=%s",
                                       self.coordinator.controller_mac_address, station_id, self.coordinator.pending_stop_stations)
+                        await self._report("irrigation_failed", station_id, "automatic", "Station shutdown not confirmed")
                         return
                     if attempt < max_retries:
                         _LOGGER.warning("%s - Station %s interrupted; retrying remaining watering once after confirmed shutdown (%.1f seconds remaining).",
@@ -533,6 +550,10 @@ class IrrigationRunner:
                     else:
                         _LOGGER.error("%s - Station %s failed after retry; continuing with remaining stations after confirmed shutdown.",
                                       self.coordinator.controller_mac_address, station_id)
+                        failed_stations += 1
+                        await self._report("irrigation_failed", station_id, "automatic", "Station failed after retry")
+        if watered_stations and not failed_stations and generation == self._generation and not self._closing:
+            await self._report("cycle_finished", None, "automatic")
 
     async def start_irrigation(
         self, station: int, minutes: int | None = None, *, source: str = "manual",
@@ -553,6 +574,8 @@ class IrrigationRunner:
                 if self.coordinator.pending_stop_stations:
                     _LOGGER.error("%s - Start refused: controller shutdown is still pending.",
                                   self.coordinator.controller_mac_address)
+                    if source == "manual":
+                        await self._report("irrigation_failed", station, source, "Controller shutdown still pending")
                     return False
             if self._session is not None or self.coordinator.current_irrigation is not None:
                 if not await self._stop_locked(self._all_stations(), "replacing previous session"):
@@ -567,6 +590,8 @@ class IrrigationRunner:
                                       self.coordinator.controller_mac_address, station_id,
                                       self.coordinator.station_switch_tracker.get_station_switch_entity_id(station_id), state)
                         await self._publish()
+                        if source == "manual":
+                            await self._report("irrigation_failed", station, source, "Station switch unavailable")
                         return False
                 if any(self._switch_state(i) == STATE_ON for i in self._all_stations()):
                     if not await self._stop_locked(self._all_stations(), "stopping externally active valves"):
@@ -627,6 +652,8 @@ class IrrigationRunner:
             except Exception as exc:
                 _LOGGER.error("%s - Station %s start failed: %s", self.coordinator.controller_mac_address, station, exc)
                 await self._stop_locked([station], "start was not confirmed")
+                if source == "manual":
+                    await self._report("irrigation_failed", station, source, f"Start failed: {exc}")
                 return False
             finally:
                 self._starting_station = None
@@ -670,6 +697,8 @@ class IrrigationRunner:
                         if session.irrigation.source not in ("automatic", "manual_cycle"):
                             self._generation += 1
                         await self._stop_locked([station], "switch stopped or became unavailable")
+                        if session.irrigation.source == "manual":
+                            await self._report("irrigation_failed", station, "manual", "Station switch stopped unexpectedly")
                         return False
                     now = min(asyncio.get_running_loop().time(), session.deadline)
                     elapsed = max(0.0, now - session.last_sample)
@@ -680,7 +709,12 @@ class IrrigationRunner:
                     self.coordinator.sprinkle_total_amount_today[station - 1] += liters / area
                     if now >= session.deadline:
                         self.coordinator.last_sprinkle = dt_util.now()
-                        return await self._stop_locked([station], "session duration completed")
+                        stopped = await self._stop_locked([station], "session duration completed")
+                        if stopped:
+                            await self._report("station_finished", station, session.irrigation.source)
+                        elif session.irrigation.source == "manual":
+                            await self._report("irrigation_failed", station, "manual", "Failed to confirm station shutdown")
+                        return stopped
                     self.coordinator.last_sprinkle = dt_util.now()
         except asyncio.CancelledError:
             async with self._lock:
@@ -692,6 +726,8 @@ class IrrigationRunner:
             async with self._lock:
                 if self._session is session:
                     await self._stop_locked([station], "session worker failed")
+            if session.irrigation.source == "manual":
+                await self._report("irrigation_failed", station, "manual", "Irrigation session failed unexpectedly")
             return False
 
     async def stop_station(self, station: int) -> bool:
