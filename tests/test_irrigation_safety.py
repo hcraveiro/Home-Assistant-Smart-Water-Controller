@@ -15,6 +15,7 @@ from custom_components.smart_water_controller.runtime.active_irrigation import A
 from custom_components.smart_water_controller.runtime.storage import IrrigationStorage, PersistentIrrigationState
 from custom_components.smart_water_controller.runtime.schedule_state import ScheduleStateManager
 from custom_components.smart_water_controller.runtime.switch_tracking import StationSwitchTracker
+from custom_components.smart_water_controller.runtime.irrigation_notifications import IrrigationNotifications
 from custom_components.smart_water_controller.api.controller import SmartWaterControllerAPI
 from custom_components.smart_water_controller.helpers import planning
 
@@ -651,6 +652,130 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.runner.run_watering_cycle('08:00:00')
         self.assertEqual(len([c for c in self.c.api.commands if c[0] == 'on']), 1)
         await task
+
+
+
+class FakeNotifyServices:
+    def __init__(self):
+        self.calls = []
+
+    def async_services(self):
+        return {"notify": {
+            "mobile_app_xiaomi_redmi_note_14_pro_henrique": object(),
+            "mobile_app_xiaomi_redmi_note_14_pro_marta": object(),
+        }}
+
+    def has_service(self, domain, service):
+        return domain == "notify" and service in self.async_services()["notify"]
+
+    async def async_call(self, domain, service, data, **kwargs):
+        self.calls.append((domain, service, data))
+
+
+class NotificationOutcomeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.c = Coordinator(switch=False)
+        self.c.config_entry = SimpleNamespace(data={"name": "Rainbird"}, options={})
+        self.c.hass.services = FakeNotifyServices()
+        self.c.last_irrigation_result = None
+        self.c.last_irrigation_failure = None
+        self.c.station_irrigation_results = {}
+        self.c.irrigation_notifications = IrrigationNotifications(self.c)
+
+    async def asyncTearDown(self):
+        await self.c.irrigation_runner.async_close()
+
+    async def test_notifications_are_off_by_default_but_failures_are_persisted(self):
+        self.assertFalse(self.c.irrigation_notifications.settings["notifications_enabled"])
+        await self.c.irrigation_notifications.report(
+            "irrigation_failed", station=2, source="automatic", reason="Bluetooth timeout",
+        )
+        self.assertEqual(self.c.last_irrigation_result["result"], "failed")
+        self.assertEqual(self.c.last_irrigation_failure["station_name"], "Zone 2")
+        self.assertEqual(self.c.stations[1].state, "Failed")
+        self.assertEqual(self.c.station_irrigation_results["2"]["reason"], "Bluetooth timeout")
+        self.assertFalse(self.c.hass.services.calls)
+
+    async def test_selected_mobile_devices_receive_exact_fixed_messages(self):
+        self.c.config_entry.options = {
+            "notifications_enabled": True,
+            "notify_station_finished": True,
+            "notify_cycle_finished": True,
+            "notify_irrigation_failed": True,
+            "notification_targets": [
+                "notify.mobile_app_xiaomi_redmi_note_14_pro_henrique",
+                "notify.mobile_app_xiaomi_redmi_note_14_pro_marta",
+            ],
+        }
+        manager = self.c.irrigation_notifications
+        await manager.report("station_finished", station=1, source="manual")
+        await manager.report("cycle_finished", source="manual_cycle")
+        await manager.report("cycle_finished", source="automatic")
+        await manager.report("irrigation_failed", station=3, source="automatic", reason="Connection lost")
+        calls = self.c.hass.services.calls
+        self.assertEqual(len(calls), 8)
+        self.assertEqual(
+            [calls[index][2]["message"] for index in (0, 2, 4, 6)],
+            ["Sprinkling finished on station Zone 1.", "Manual cycle finished on Rainbird.",
+             "Scheduled cycle finished on Rainbird.", "Sprinkling failed on Zone 3."],
+        )
+        self.assertEqual(
+            {calls[0][1], calls[1][1]},
+            {"mobile_app_xiaomi_redmi_note_14_pro_henrique", "mobile_app_xiaomi_redmi_note_14_pro_marta"},
+        )
+
+    async def test_event_toggles_do_not_change_predefined_messages(self):
+        self.c.config_entry.options = {
+            "notifications_enabled": True,
+            "notify_station_finished": False,
+            "notify_cycle_finished": False,
+            "notify_irrigation_failed": True,
+            "notification_targets": ["notify.mobile_app_xiaomi_redmi_note_14_pro_henrique"],
+        }
+        manager = self.c.irrigation_notifications
+        await manager.report("station_finished", station=1)
+        await manager.report("cycle_finished", source="automatic")
+        self.assertEqual(self.c.hass.services.calls, [])
+        await manager.report("irrigation_failed", station=1)
+        self.assertEqual(len(self.c.hass.services.calls), 1)
+
+    async def test_failed_service_command_sets_failed_without_false_completed(self):
+        async def reject_station(station, minutes):
+            raise APIConnectionError("Bluetooth timeout")
+        self.c.api.sprinkle_station = reject_station
+        self.c.config_entry.options = {
+            "notifications_enabled": True,
+            "notify_station_finished": True,
+            "notify_cycle_finished": True,
+            "notify_irrigation_failed": True,
+            "notification_targets": ["notify.mobile_app_xiaomi_redmi_note_14_pro_henrique"],
+        }
+        self.assertFalse(await self.c.irrigation_runner.start_irrigation(1, 5, source="manual", run_seconds=.02))
+        self.assertEqual(self.c.last_irrigation_result["event"], "irrigation_failed")
+        self.assertEqual(self.c.stations[0].state, "Failed")
+        self.assertEqual(
+            [call[2]["message"] for call in self.c.hass.services.calls],
+            ["Sprinkling failed on Zone 1."],
+        )
+
+    async def test_manual_stop_never_reports_failure_or_completion(self):
+        task = asyncio.create_task(self.c.irrigation_runner.start_irrigation(1, 5, run_seconds=.2))
+        async with asyncio.timeout(1):
+            while self.c.irrigation_runner._session is None:
+                await asyncio.sleep(.001)
+        await self.c.irrigation_runner.stop_station(1)
+        self.assertFalse(await task)
+        self.assertIsNone(self.c.last_irrigation_result)
+
+    async def test_failed_state_clears_without_erasing_failure_history(self):
+        manager = self.c.irrigation_notifications
+        await manager.report("irrigation_failed", station=1, reason="Device unreachable")
+        manager._failure_task.cancel()
+        with patch("custom_components.smart_water_controller.runtime.irrigation_notifications.asyncio.sleep") as sleeper:
+            await manager._clear_failure_after_delay(1)
+        self.assertEqual(self.c.stations[0].state, "Stopped")
+        self.assertIsNone(manager.failed_station)
+        self.assertEqual(self.c.last_irrigation_failure["reason"], "Device unreachable")
 
 
 class PlanningTests(unittest.IsolatedAsyncioTestCase):
