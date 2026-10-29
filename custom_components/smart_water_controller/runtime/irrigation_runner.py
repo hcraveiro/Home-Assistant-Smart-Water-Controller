@@ -728,6 +728,7 @@ class IrrigationRunner:
                     area = self.coordinator.station_areas[station - 1] or 1
                     self.coordinator.total_water_consumption += liters
                     self.coordinator.sprinkle_total_amount_today[station - 1] += liters / area
+                    self.coordinator.sprinkle_duration_today_seconds[station - 1] += elapsed
                     if now >= session.deadline:
                         self.coordinator.last_sprinkle = dt_util.now()
                         stopped = await self._stop_locked([station], "session duration completed")

@@ -208,6 +208,43 @@ def build_irrigation_planning_sensor_data(coordinator: Any) -> list[dict[str, An
 
     for station_id in range(1, coordinator.num_stations + 1):
         station_label = _station_label(coordinator, station_id)
+        duration_device_id = (
+            f"{coordinator.controller_mac_address}_sprinkle_duration_today_station_{station_id}"
+        )
+        planned_duration_device_id = (
+            f"{coordinator.controller_mac_address}_planned_sprinkle_duration_today_station_{station_id}"
+        )
+        flow_rate = coordinator.water_flow_rate[station_id - 1]
+        area = coordinator.station_areas[station_id - 1]
+        planned_seconds = (
+            max(0.0, coordinator.sprinkle_target_amount_today[station_id - 1])
+            * area / flow_rate * 60.0
+            if flow_rate > 0 and area > 0
+            else None
+        )
+        data.append({
+            "device_id": duration_device_id,
+            "device_type": "SPRINKLE_DURATION_TODAY_SENSOR",
+            "device_name": f"Sprinkle Duration Today {station_label}",
+            "device_uid": _stable_uid(coordinator, duration_device_id),
+            "software_version": "1.0",
+            "state": round(coordinator.sprinkle_duration_today_seconds[station_id - 1], 2),
+            "icon": "mdi:timer-outline",
+            "last_reboot": None,
+        })
+        data.append({
+            "device_id": planned_duration_device_id,
+            "device_type": "PLANNED_SPRINKLE_DURATION_TODAY_SENSOR",
+            "device_name": f"Planned Sprinkle Duration Today {station_label}",
+            "device_uid": _stable_uid(coordinator, planned_duration_device_id),
+            "software_version": "1.0",
+            "state": round(planned_seconds, 2) if planned_seconds is not None else None,
+            "icon": "mdi:timer-check-outline",
+            "last_reboot": None,
+        })
+
+    for station_id in range(1, coordinator.num_stations + 1):
+        station_label = _station_label(coordinator, station_id)
         forecasted_sprinkle_device_id = (
             f"{coordinator.controller_mac_address}_forecasted_sprinkle_today_station_{station_id}"
         )

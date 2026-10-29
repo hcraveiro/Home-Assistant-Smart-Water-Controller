@@ -11,6 +11,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     UnitOfPrecipitationDepth,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -51,6 +52,8 @@ async def async_setup_entry(
         SensorTypeClass("IRRIGATION_END_TIME_SENSOR", "state", IrrigationEndTimeSensor),
         SensorTypeClass("TOTAL_WATER_CONSUMPTION_SENSOR", "state", TotalWaterConsumptionSensor),
         SensorTypeClass("SPRINKLE_TOTAL_AMOUNT_SENSOR", "state", SprinkleTotalAmountSensor),
+        SensorTypeClass("SPRINKLE_DURATION_TODAY_SENSOR", "state", SprinkleDurationTodaySensor),
+        SensorTypeClass("PLANNED_SPRINKLE_DURATION_TODAY_SENSOR", "state", PlannedSprinkleDurationTodaySensor),
         SensorTypeClass("FORECASTED_SPRINKLE_TODAY_SENSOR", "state", ForecastedSprinkleTodaySensor),
         SensorTypeClass("REMAINING_SPRINKLE_TODAY_SENSOR", "state", RemainingSprinkleTodaySensor),
     ]
@@ -383,6 +386,34 @@ class SprinkleTotalAmountSensor(SmartWaterControllerBaseEntity, SensorEntity):
         """Return the amount already sprinkled today."""
         value = self.coordinator.get_device_parameter(self.device_id, self.parameter)
         return round(float(value or 0), 2)
+
+
+class SprinkleDurationTodaySensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Confirmed daily station irrigation duration in seconds."""
+
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+
+    @property
+    def native_value(self) -> float:
+        """Return daily confirmed ON duration without rounding to minutes."""
+        value = self.coordinator.get_device_parameter(self.device_id, self.parameter)
+        return round(float(value or 0), 2)
+
+
+class PlannedSprinkleDurationTodaySensor(SmartWaterControllerBaseEntity, SensorEntity):
+    """Today's weather-adjusted planned station duration in seconds."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the planned duration or unknown when the flow is invalid."""
+        value = self.coordinator.get_device_parameter(self.device_id, self.parameter)
+        return round(float(value), 2) if value is not None else None
 
 
 class ForecastedSprinkleTodaySensor(SmartWaterControllerBaseEntity, SensorEntity):

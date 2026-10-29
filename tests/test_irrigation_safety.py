@@ -91,6 +91,7 @@ class Coordinator:
         self.water_flow_rate = [21, 21, 21]
         self.station_areas = [50, 50, 50]
         self.sprinkle_total_amount_today = [0., 0., 0.]
+        self.sprinkle_duration_today_seconds = [0., 0., 0.]
         self.sprinkle_target_amount_today = [4.2, 4.2, 4.2]
         self.total_water_consumption = 0.
         self.rain_total_amount_forecasted_today = 0.
@@ -178,6 +179,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         for station in (1, 2, 3):
             self.assertTrue(await self.runner.start_irrigation(station, 5, run_seconds=.025, source='automatic'))
             self.assertGreater(self.c.sprinkle_total_amount_today[station - 1], 0)
+            self.assertGreater(self.c.sprinkle_duration_today_seconds[station - 1], 0)
         self.assertEqual([c for c in self.c.api.commands if c[0] == 'off'],
                          [('off', 1), ('off', 2), ('off', 3)])
 
@@ -270,8 +272,10 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             await self.c.station_switch_tracker.sync()
         self.assertFalse(await task)
         amount = self.c.total_water_consumption
+        duration = self.c.sprinkle_duration_today_seconds[0]
         await asyncio.sleep(.025)
         self.assertEqual(amount, self.c.total_water_consumption)
+        self.assertEqual(duration, self.c.sprinkle_duration_today_seconds[0])
         self.assertEqual(self.c.pending_stop_stations, [1])
         self.assertEqual(self.c.stations[0].state, 'Unavailable')
         self.c.set_state(1, 'on')

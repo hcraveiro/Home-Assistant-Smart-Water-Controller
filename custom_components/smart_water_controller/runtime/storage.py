@@ -43,6 +43,7 @@ class PersistentIrrigationState:
     total_water_consumption: float = 0
 
     sprinkle_total_amount_today: list[float] = field(default_factory=list)
+    sprinkle_duration_today_seconds: list[float] = field(default_factory=list)
     sprinkle_target_amount_today: list[float] = field(default_factory=list)
     forecasted_sprinkle_today: list[float] = field(default_factory=list)
     remaining_sprinkle_today: list[float] = field(default_factory=list)
@@ -145,6 +146,7 @@ class IrrigationStorage:
             rain_total_amount_forecasted_today=0,
             total_water_consumption=0,
             sprinkle_total_amount_today=[0.0] * self._num_stations,
+            sprinkle_duration_today_seconds=[0.0] * self._num_stations,
             sprinkle_target_amount_today=[0.0] * self._num_stations,
             forecasted_sprinkle_today=[0.0] * self._num_stations,
             remaining_sprinkle_today=[0.0] * self._num_stations,
@@ -160,6 +162,14 @@ class IrrigationStorage:
             default_value=0.0,
             log_prefix=self._log_prefix,
             field_name="sprinkle_total_amount_today",
+        )
+
+        sprinkle_duration_today_seconds = _get_list(
+            storage_data.get("sprinkle_duration_today_seconds"),
+            expected_length=self._num_stations,
+            default_value=0.0,
+            log_prefix=self._log_prefix,
+            field_name="sprinkle_duration_today_seconds",
         )
 
         sprinkle_target_amount_today = _get_list(
@@ -214,6 +224,7 @@ class IrrigationStorage:
             ),
             total_water_consumption=float(storage_data.get("total_water_consumption", 0) or 0),
             sprinkle_total_amount_today=sprinkle_total_amount_today,
+            sprinkle_duration_today_seconds=sprinkle_duration_today_seconds,
             sprinkle_target_amount_today=sprinkle_target_amount_today,
             forecasted_sprinkle_today=forecasted_sprinkle_today,
             remaining_sprinkle_today=remaining_sprinkle_today,
@@ -268,6 +279,7 @@ class IrrigationStorage:
             "rain_total_amount_forecasted_today": state.rain_total_amount_forecasted_today,
             "total_water_consumption": state.total_water_consumption,
             "sprinkle_total_amount_today": state.sprinkle_total_amount_today,
+            "sprinkle_duration_today_seconds": state.sprinkle_duration_today_seconds,
             "sprinkle_target_amount_today": state.sprinkle_target_amount_today,
             "forecasted_sprinkle_today": state.forecasted_sprinkle_today,
             "remaining_sprinkle_today": state.remaining_sprinkle_today,

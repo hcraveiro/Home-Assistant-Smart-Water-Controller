@@ -256,6 +256,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.irrigation_manual_duration = 10
         self.water_flow_rate = [12] * self.num_stations
         self.sprinkle_total_amount_today = [0.0] * self.num_stations
+        self.sprinkle_duration_today_seconds = [0.0] * self.num_stations
         self.sprinkle_target_amount_today = [0.0] * self.num_stations
         self.forecasted_sprinkle_today = [0.0] * self.num_stations
         self.remaining_sprinkle_today = [0.0] * self.num_stations
@@ -390,6 +391,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.total_water_consumption = state.total_water_consumption
     
         self.sprinkle_total_amount_today = state.sprinkle_total_amount_today
+        self.sprinkle_duration_today_seconds = state.sprinkle_duration_today_seconds
         self.sprinkle_target_amount_today = state.sprinkle_target_amount_today
         self.forecasted_sprinkle_today = state.forecasted_sprinkle_today
         self.remaining_sprinkle_today = state.remaining_sprinkle_today
@@ -424,6 +426,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             rain_total_amount_forecasted_today=self.rain_total_amount_forecasted_today,
             total_water_consumption=self.total_water_consumption,
             sprinkle_total_amount_today=self.sprinkle_total_amount_today,
+            sprinkle_duration_today_seconds=self.sprinkle_duration_today_seconds,
             sprinkle_target_amount_today=self.sprinkle_target_amount_today,
             forecasted_sprinkle_today=self.forecasted_sprinkle_today,
             remaining_sprinkle_today=self.remaining_sprinkle_today,
@@ -617,6 +620,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.rain_time_today = 0
         self.rain_total_amount_today = 0
         self.sprinkle_total_amount_today = [0.0] * self.num_stations
+        self.sprinkle_duration_today_seconds = [0.0] * self.num_stations
         self.weather_runtime.reset_daily_state()
         # A new day needs a new forecast; yesterday's total is not valid today.
         self.weather_forecast_available = self.weather_api is None
