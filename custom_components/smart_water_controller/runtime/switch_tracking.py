@@ -113,7 +113,17 @@ class StationSwitchTracker:
                     new_value,
                 )
 
-                self.coordinator.irrigation_runner.notify_switch_change(tracked_station_id, new_value)
+                runner = self.coordinator.irrigation_runner
+                active_session = runner._session
+                if (active_session is not None
+                        and active_session.irrigation.station == tracked_station_id
+                        and old_value == STATE_ON and new_value != STATE_ON):
+                    _LOGGER.warning(
+                        "%s - Active station %s switch %s changed %s -> %s; source=%s. Session interruption will be processed.",
+                        self.coordinator.controller_mac_address, tracked_station_id,
+                        tracked_entity_id, old_value, new_value, active_session.irrigation.source,
+                    )
+                runner.notify_switch_change(tracked_station_id, new_value)
                 self.hass.async_create_task(self.sync())
 
             unsubscribe = async_track_state_change_event(

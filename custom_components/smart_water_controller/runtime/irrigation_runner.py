@@ -216,9 +216,10 @@ class IrrigationRunner:
                 state = self._switch_state(station)
                 if state != STATE_ON or session.interrupted:
                     self._generation += 1
-                    _LOGGER.error("%s - Station %s (%s) changed to %s during irrigation; stopping session.",
+                    _LOGGER.error("%s - Station %s (%s) changed to %s during irrigation; stopping session. source=%s, interrupted=%s; remaining scheduled stations will be skipped.",
                                   self.coordinator.controller_mac_address, station,
-                                  self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), state)
+                                  self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), state,
+                                  session.irrigation.source, session.interrupted)
                     await self._stop_locked([station], "switch no longer confirms ON")
                 else:
                     session.wake.set()
@@ -410,6 +411,8 @@ class IrrigationRunner:
                 )
 
                 if generation != self._generation:
+                    _LOGGER.warning("%s - Scheduled watering cancelled before station %s: generation changed (%s -> %s); remaining stations skipped.",
+                                    self.coordinator.controller_mac_address, station_id, generation, self._generation)
                     return
                 completed = await self.start_irrigation(
                     station_id,
@@ -419,6 +422,8 @@ class IrrigationRunner:
                     run_seconds=plan.amount_to_apply_mm / plan.mm_per_minute * 60,
                 )
                 if not completed:
+                    _LOGGER.warning("%s - Scheduled watering aborted at station %s: incomplete irrigation; remaining stations skipped. switch_state=%s, pending_stops=%s.",
+                                    self.coordinator.controller_mac_address, station_id, self._switch_state(station_id), self.coordinator.pending_stop_stations)
                     return
 
     async def start_irrigation(
@@ -546,6 +551,11 @@ class IrrigationRunner:
                     if self._session is not session:
                         return False
                     if self.coordinator._is_switch_control_method() and (self._switch_state(station) != STATE_ON or session.interrupted):
+                        _LOGGER.warning("%s - Station %s unexpectedly interrupted: switch=%s, state=%s, latched_interruption=%s, source=%s, remaining_seconds=%.1f; aborting sequence.",
+                                        self.coordinator.controller_mac_address, station,
+                                        self.coordinator.station_switch_tracker.get_station_switch_entity_id(station),
+                                        self._switch_state(station), session.interrupted, session.irrigation.source,
+                                        max(0.0, session.deadline - asyncio.get_running_loop().time()))
                         self._generation += 1
                         await self._stop_locked([station], "switch stopped or became unavailable")
                         return False
