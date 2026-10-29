@@ -14,6 +14,7 @@ from ..const import (
     NOTIFY_STATION_FINISHED,
     NOTIFY_CYCLE_FINISHED,
     NOTIFY_IRRIGATION_FAILED,
+    NOTIFY_MANUAL_STOP,
     NOTIFICATION_TARGETS,
     NOTIFICATION_DEFAULTS,
 )
@@ -24,6 +25,9 @@ EVENT_OPTIONS = {
     "station_finished": NOTIFY_STATION_FINISHED,
     "cycle_finished": NOTIFY_CYCLE_FINISHED,
     "irrigation_failed": NOTIFY_IRRIGATION_FAILED,
+    "station_stopped": NOTIFY_MANUAL_STOP,
+    "cycle_stopped": NOTIFY_MANUAL_STOP,
+    "all_stopped": NOTIFY_MANUAL_STOP,
 }
 
 
@@ -59,7 +63,9 @@ class IrrigationNotifications:
         timestamp = dt_util.now().isoformat()
         station_name = self.station_name(station) if station is not None else None
         result = {
-            "result": "failed" if event == "irrigation_failed" else "completed",
+            "result": ("failed" if event == "irrigation_failed"
+                       else "cancelled" if event in ("station_stopped", "cycle_stopped", "all_stopped")
+                       else "completed"),
             "event": event,
             "source": source,
             "station": station,
@@ -125,6 +131,13 @@ class IrrigationNotifications:
         elif event == "cycle_finished":
             kind = "Scheduled" if source == "automatic" else "Manual"
             message = f"{kind} cycle finished on {self.controller_name}."
+        elif event == "station_stopped":
+            message = f"Sprinkling manually stopped on station {station_name}."
+        elif event == "cycle_stopped":
+            kind = "Scheduled" if source == "automatic" else "Manual"
+            message = f"{kind} cycle stopped on {self.controller_name}."
+        elif event == "all_stopped":
+            message = f"All irrigation manually stopped on {self.controller_name}."
         else:
             message = f"Sprinkling failed on {station_name or self.controller_name}."
 
