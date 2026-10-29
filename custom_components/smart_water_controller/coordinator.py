@@ -770,9 +770,13 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         )
 
 
+    async def stop_station(self, station: int):
+        """Stop the active station, continuing a cycle when safe."""
+        return await self.irrigation_runner.stop_station(station)
+
     async def stop_irrigation(self):
-        """Stop irrigation."""
-        await self.irrigation_runner.stop_irrigation()
+        """Stop all irrigation and cancel the active cycle."""
+        return await self.irrigation_runner.stop_irrigation()
 
     
     async def turn_controller_on(self):
