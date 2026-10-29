@@ -493,20 +493,19 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 self._input_data.update(notifications)
                 controller_mac = (self._input_data.get(CONTROLLER_MAC_ADDRESS) or "").strip()
-            friendly_name = (self._input_data.get(CONF_NAME) or "").strip()
+                friendly_name = (self._input_data.get(CONF_NAME) or "").strip()
+                title = friendly_name or controller_mac or "SmartWaterController"
 
-            title = friendly_name or controller_mac or "SmartWaterController"
+                if self._reconfigure_entry is not None:
+                    self.hass.config_entries.async_update_entry(
+                        self._reconfigure_entry,
+                        data=self._input_data,
+                        title=title,
+                    )
+                    await self.hass.config_entries.async_reload(self._reconfigure_entry.entry_id)
+                    return self.async_abort(reason="reconfigure_successful")
 
-            if self._reconfigure_entry is not None:
-                self.hass.config_entries.async_update_entry(
-                    self._reconfigure_entry,
-                    data=self._input_data,
-                    title=title,
-                )
-                await self.hass.config_entries.async_reload(self._reconfigure_entry.entry_id)
-                return self.async_abort(reason="reconfigure_successful")
-
-            return self.async_create_entry(title=title, data=self._input_data)
+                return self.async_create_entry(title=title, data=self._input_data)
 
         return self.async_show_form(
             step_id="notifications",
