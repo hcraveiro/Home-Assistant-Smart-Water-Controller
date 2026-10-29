@@ -75,6 +75,9 @@ class IrrigationRunner:
                     status = "Stopping"
                 else:
                     status = "Sprinkling" if state == STATE_ON else "Stopped"
+                    notifications = getattr(self.coordinator, "irrigation_notifications", None)
+                    if state == STATE_OFF and notifications is not None and notifications.failed_station == station:
+                        status = "Failed"
                 self.coordinator.stations[station - 1].state = status
             if self._session is None and not self.coordinator.pending_stop_stations and self._starting_station is None:
                 external_station = next((i for i in self._all_stations() if self._switch_state(i) == STATE_ON), None)
@@ -570,6 +573,9 @@ class IrrigationRunner:
                         return False
 
             now = dt_util.now()
+            notifications = getattr(self.coordinator, "irrigation_notifications", None)
+            if notifications is not None:
+                notifications.mark_started(station)
             irrigation = ActiveIrrigationState.create(
                 station=station, source=source, duration_minutes=duration,
                 station_name=self.coordinator._get_station_name(station), start_at=now,
@@ -722,6 +728,9 @@ class IrrigationRunner:
             self._generation += 1
             if self._session is not None or self.coordinator.active_irrigation is not None:
                 await self._stop_locked(self._all_stations(), "integration unloading")
+        notifications = getattr(self.coordinator, "irrigation_notifications", None)
+        if notifications is not None:
+            await notifications.async_close()
         tasks = list(self._workers)
         if self._retry_task is not None:
             self._retry_task.cancel()
