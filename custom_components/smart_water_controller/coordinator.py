@@ -14,6 +14,7 @@ from .runtime.scheduler import IrrigationScheduler
 from .runtime.schedule_state import ScheduleStateManager
 from .runtime.weather_runtime import WeatherRuntime
 from .runtime.irrigation_runner import IrrigationRunner
+from .runtime.irrigation_notifications import IrrigationNotifications
 from .runtime.active_irrigation import (
     ActiveIrrigationState,
     empty_controller_attributes,
@@ -172,6 +173,10 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.schedule_state = ScheduleStateManager(self)
         self.weather_runtime = WeatherRuntime(self)
         self.irrigation_runner = IrrigationRunner(self)
+        self.irrigation_notifications = IrrigationNotifications(self)
+        self.last_irrigation_result = None
+        self.last_irrigation_failure = None
+        self.station_irrigation_results = {}
     
         self.controller = IrrigationController(
             device_id=f"{self.controller_mac_address}_irrigation_controller_status",
@@ -392,6 +397,9 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.schedule = state.schedule
         self.pending_stop_stations = state.pending_stop_stations
         self.active_irrigation = state.active_irrigation
+        self.last_irrigation_result = state.last_irrigation_result
+        self.last_irrigation_failure = state.last_irrigation_failure
+        self.station_irrigation_results = state.station_irrigation_results
         
     async def save_persistent_data(self):
         """Save persistent data to storage."""
@@ -422,6 +430,9 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             schedule=self.schedule,
             active_irrigation=self.active_irrigation,
             pending_stop_stations=list(self.pending_stop_stations),
+            last_irrigation_result=self.last_irrigation_result,
+            last_irrigation_failure=self.last_irrigation_failure,
+            station_irrigation_results=dict(self.station_irrigation_results),
         )
 
 
@@ -485,7 +496,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     def get_current_irrigation_station_name(self) -> str:
         """Return the current irrigation station name."""
         if self.current_irrigation is None:
-            return "Idle"
+            return "Failed" if self.irrigation_notifications.failed_station is not None else "Idle"
     
         return self.current_irrigation.station_name or self._get_station_name(
             self.current_irrigation.station
@@ -770,9 +781,13 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         )
 
 
+    async def stop_station(self, station: int):
+        """Stop the active station, continuing a cycle when safe."""
+        return await self.irrigation_runner.stop_station(station)
+
     async def stop_irrigation(self):
-        """Stop irrigation."""
-        await self.irrigation_runner.stop_irrigation()
+        """Stop all irrigation and cancel the active cycle."""
+        return await self.irrigation_runner.stop_irrigation()
 
     
     async def turn_controller_on(self):

@@ -117,3 +117,20 @@ SOLEM_TOOLKIT_SERVICE_STOP = "solem_toolkit.stop_manual_sprinkle"
 SOLEM_TOOLKIT_SERVICE_TURN_ON = "solem_toolkit.turn_on"
 SOLEM_TOOLKIT_SERVICE_TURN_OFF = "solem_toolkit.turn_off_permanent"
 
+
+# Optional notification settings. The master switch is disabled on new installs.
+NOTIFICATIONS_ENABLED = "notifications_enabled"
+NOTIFY_STATION_FINISHED = "notify_station_finished"
+NOTIFY_CYCLE_FINISHED = "notify_cycle_finished"
+NOTIFY_IRRIGATION_FAILED = "notify_irrigation_failed"
+NOTIFY_MANUAL_STOP = "notify_manual_stop"
+NOTIFICATION_TARGETS = "notification_targets"
+
+NOTIFICATION_DEFAULTS = {
+    NOTIFICATIONS_ENABLED: False,
+    NOTIFY_STATION_FINISHED: True,
+    NOTIFY_CYCLE_FINISHED: True,
+    NOTIFY_IRRIGATION_FAILED: True,
+    NOTIFY_MANUAL_STOP: True,
+    NOTIFICATION_TARGETS: [],
+}

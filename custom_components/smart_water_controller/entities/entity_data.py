@@ -124,6 +124,23 @@ def build_button_data(coordinator: Any) -> list[dict[str, Any]]:
             }
         )
 
+    for station_id in range(1, coordinator.num_stations + 1):
+        station_label = _station_label(coordinator, station_id)
+        stop_station_device_id = (
+            f"{coordinator.controller_mac_address}_irrigation_manual_stop_station_{station_id}"
+        )
+        data.append(
+            {
+                "device_id": stop_station_device_id,
+                "device_type": "STOP_STATION_BUTTON",
+                "device_name": f"Stop {station_label}",
+                "device_uid": _stable_uid(coordinator, stop_station_device_id),
+                "software_version": "1.0",
+                "icon": "mdi:stop-circle-outline",
+                "last_reboot": None,
+            }
+        )
+
     stop_device_id = f"{coordinator.controller_mac_address}_irrigation_stop"
     data.append(
         {

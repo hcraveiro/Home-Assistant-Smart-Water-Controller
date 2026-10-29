@@ -50,6 +50,9 @@ class PersistentIrrigationState:
     schedule: list[dict[str, Any]] | None = None
     active_irrigation: ActiveIrrigationState | None = None
     pending_stop_stations: list[int] = field(default_factory=list)
+    last_irrigation_result: dict[str, Any] | None = None
+    last_irrigation_failure: dict[str, Any] | None = None
+    station_irrigation_results: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class IrrigationStorage:
@@ -216,6 +219,9 @@ class IrrigationStorage:
             remaining_sprinkle_today=remaining_sprinkle_today,
             schedule=storage_data.get("schedule"),
             active_irrigation=active_irrigation,
+            last_irrigation_result=storage_data.get("last_irrigation_result"),
+            last_irrigation_failure=storage_data.get("last_irrigation_failure"),
+            station_irrigation_results=storage_data.get("station_irrigation_results") or {},
             pending_stop_stations=[
                 station for station in range(1, self._num_stations + 1)
                 if station in (storage_data.get("pending_stop_stations") or [])
@@ -267,6 +273,9 @@ class IrrigationStorage:
             "remaining_sprinkle_today": state.remaining_sprinkle_today,
             "schedule": state.schedule,
             "pending_stop_stations": list(state.pending_stop_stations),
+            "last_irrigation_result": state.last_irrigation_result,
+            "last_irrigation_failure": state.last_irrigation_failure,
+            "station_irrigation_results": state.station_irrigation_results,
             "active_irrigation": state.active_irrigation.to_storage()
             if state.active_irrigation
             else None,

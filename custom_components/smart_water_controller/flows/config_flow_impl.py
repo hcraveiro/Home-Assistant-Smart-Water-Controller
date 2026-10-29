@@ -42,6 +42,7 @@ from ..const import (
     WEATHER_PROVIDER,
     WEATHER_PROVIDER_NONE,
 )
+from .notifications import available_mobile_services, notification_schema, parse_notification_settings, current_settings
 from .schemas import (
     build_action_params_schema,
     build_lawn_areas_schema,
@@ -458,21 +459,7 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._input_data.update(user_input)
 
-            controller_mac = (self._input_data.get(CONTROLLER_MAC_ADDRESS) or "").strip()
-            friendly_name = (self._input_data.get(CONF_NAME) or "").strip()
-
-            title = friendly_name or controller_mac or "SmartWaterController"
-
-            if self._reconfigure_entry is not None:
-                self.hass.config_entries.async_update_entry(
-                    self._reconfigure_entry,
-                    data=self._input_data,
-                    title=title,
-                )
-                await self.hass.config_entries.async_reload(self._reconfigure_entry.entry_id)
-                return self.async_abort(reason="reconfigure_successful")
-
-            return self.async_create_entry(title=title, data=self._input_data)
+            return await self.async_step_notifications()
 
         default_use = self._input_data.get(USE_SOIL_MOISTURE, "false")
         default_sensor = self._input_data.get(SOIL_MOISTURE_SENSOR)
@@ -489,5 +476,41 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                 default_threshold,
             ),
             errors={},
+            last_step=False,
+        )
+
+    async def async_step_notifications(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Final setup step: opt-in per-event mobile notifications."""
+        settings = dict(self._input_data)
+        if self._reconfigure_entry is not None:
+            settings.update(current_settings(self._reconfigure_entry))
+        services = available_mobile_services(self.hass, settings.get("notification_targets", []))
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            notifications, errors = parse_notification_settings(user_input, services)
+            if not errors:
+                self._input_data.update(notifications)
+                controller_mac = (self._input_data.get(CONTROLLER_MAC_ADDRESS) or "").strip()
+                friendly_name = (self._input_data.get(CONF_NAME) or "").strip()
+                title = friendly_name or controller_mac or "SmartWaterController"
+
+                if self._reconfigure_entry is not None:
+                    self.hass.config_entries.async_update_entry(
+                        self._reconfigure_entry,
+                        data=self._input_data,
+                        options={**self._reconfigure_entry.options, **notifications},
+                        title=title,
+                    )
+                    await self.hass.config_entries.async_reload(self._reconfigure_entry.entry_id)
+                    return self.async_abort(reason="reconfigure_successful")
+
+                return self.async_create_entry(title=title, data=self._input_data)
+
+        return self.async_show_form(
+            step_id="notifications",
+            data_schema=notification_schema(user_input or settings, services),
+            errors=errors,
             last_step=True,
         )

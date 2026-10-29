@@ -731,6 +731,65 @@ If the external irrigation controller automatically turns off a station after it
 
 ---
 
+## Irrigation Outcomes and Optional Notifications (V1.1.6)
+
+Irrigation failures are now visible without reading the Home Assistant log.
+
+- A station that fails to start or unexpectedly stops can briefly show **Failed**
+  (about 12 seconds), then return to **Stopped**. The controller's
+  **Current Irrigation Station** becomes **Failed**, then **Idle**.
+- The controller status sensor exposes `last_irrigation_result` and
+  `last_irrigation_failure` attributes. Each station status sensor has a
+  `last_irrigation_result` attribute. These results are persisted across
+  Home Assistant restarts. A later successful watering does **not** erase
+  the last known failure.
+- Scheduled switch-based watering continues to retry once before a failure
+  is reported. Intentional **Stop** and **Stop All** actions are not failures.
+- A Bluetooth service acknowledgement confirms that the command was
+  accepted, but without physical valve feedback the integration cannot
+  guarantee that water flowed.
+
+### Notifications (off by default)
+
+The **final step** of initial setup and reconfiguration is **Notifications**.
+You can also edit subscriptions at any time via **Settings → Devices &
+Services → Smart Water Controller → Configure → Notifications**.
+
+Enable the master notification switch, choose the events you want, and select
+one or more mobile app notification services detected in Home Assistant.
+A configuration without recipients is rejected when notifications are enabled.
+
+| Event | Fixed notification message |
+| --- | --- |
+| Station watering completed | `Sprinkling finished on station Front Lawn 1.` |
+| Manual Run Cycle completed | `Manual cycle finished on Rainbird.` |
+| Scheduled cycle completed | `Scheduled cycle finished on Rainbird.` |
+| Irrigation failed definitively | `Sprinkling failed on Front Lawn 1.` |
+| Manual Stop on a station (individual watering or cycle) | `Sprinkling manually stopped on station Front Lawn 1.` |
+| Stop All on a manual cycle | `Manual cycle stopped on Rainbird.` |
+| Stop All on a scheduled cycle | `Scheduled cycle stopped on Rainbird.` |
+| Stop All during standalone watering | `All irrigation manually stopped on Rainbird.` |
+
+The four subscriptions can be switched on/off separately. They default to
+enabled *within* the notifications setup, but the **master switch defaults to off**;
+no messages are sent until notification recipients are selected and notifications
+are explicitly enabled. Message wording is fixed and not editable.
+
+Only a successfully finished station run raises *Station watering completed*.
+Only cycles that ran and completed successfully raise *Cycle completed*.
+A failure is reported after the scheduled recovery attempt is exhausted,
+rather than on a transient retry. A confirmed intentional station Stop or
+Stop All produces an independent **Irrigation manually stopped** notification
+when enabled. It does not trigger success or failure notifications.
+Duplicate Stop All requests without a new run are ignored for notifications.
+If a station is manually skipped, the cycle will not send a misleading
+*Cycle completed* notification.
+
+Notification messages are maintained in `strings.json` and shipped in
+`translations/en.json` under `common` translation keys, with runtime
+placeholders for station and controller names. The integration reads the
+Home Assistant translation catalog; text is fixed rather than editable.
+
 ## Active Irrigation Tracking and Restart Safety
 
 When irrigation is started by the integration, the active irrigation metadata is persisted.
