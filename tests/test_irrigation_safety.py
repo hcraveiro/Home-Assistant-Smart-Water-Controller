@@ -617,7 +617,78 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 await self.wait_for(lambda: self.runner._session is not None)
                 await self.runner.stop_irrigation()
                 await task
-        report.assert_not_awaited()
+        self.assertEqual([entry.args for entry in report.await_args_list],
+                         [("cycle_stopped", None, "manual_cycle")])
+
+    async def test_manual_cycle_station_stop_reports_only_station_stopped(self):
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .04
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+                task = asyncio.create_task(self.runner.run_manual_cycle())
+                await self.wait_for(lambda: self.runner._session is not None)
+                self.assertTrue(await self.runner.stop_station(1))
+                await task
+        self.assertIn(("station_stopped", 1, "manual_cycle"),
+                      [entry.args for entry in report.await_args_list])
+        self.assertNotIn("cycle_finished", [entry.args[0] for entry in report.await_args_list])
+        self.assertNotIn("irrigation_failed", [entry.args[0] for entry in report.await_args_list])
+        self.assertEqual([v[1] for v in self.c.api.commands if v[0] == "on"], [1, 2, 3])
+
+    async def test_scheduled_cycle_station_stop_reports_only_station_stopped(self):
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .04
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+                task = asyncio.create_task(self.runner.run_watering_cycle("08:00:00"))
+                await self.wait_for(lambda: self.runner._session is not None)
+                self.assertTrue(await self.runner.stop_station(1))
+                await task
+        self.assertIn(("station_stopped", 1, "automatic"),
+                      [entry.args for entry in report.await_args_list])
+        self.assertNotIn("cycle_finished", [entry.args[0] for entry in report.await_args_list])
+        self.assertNotIn("irrigation_failed", [entry.args[0] for entry in report.await_args_list])
+
+    async def test_scheduled_stop_all_reports_once_and_cancels_remaining_stations(self):
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .2
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+                task = asyncio.create_task(self.runner.run_watering_cycle("08:00:00"))
+                await self.wait_for(lambda: self.runner._session is not None)
+                self.assertTrue(await self.runner.stop_irrigation())
+                self.assertTrue(await self.runner.stop_irrigation())
+                await task
+        self.assertEqual([entry.args for entry in report.await_args_list],
+                         [("cycle_stopped", None, "automatic")])
+        self.assertEqual([cmd[1] for cmd in self.c.api.commands if cmd[0] == "on"], [1])
+
+    async def test_stop_all_without_active_watering_emits_no_notification(self):
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            self.assertTrue(await self.runner.stop_irrigation())
+            report.assert_not_awaited()
+
+    async def test_failed_station_shutdown_does_not_send_manual_stop(self):
+        task = await self.start(seconds=.2)
+        self.c.api.fail_off = True
+        with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
+            with self.assertLogs(runtime._LOGGER, "ERROR"):
+                self.assertFalse(await self.runner.stop_station(1))
+            report.assert_not_awaited()
+        self.c.api.fail_off = False
+        await task
 
     async def test_scheduled_failure_after_all_retries_notifies_once(self):
         with patch.object(self.runner, "_report", new_callable=AsyncMock) as report:
@@ -805,14 +876,85 @@ class NotificationOutcomeTests(unittest.IsolatedAsyncioTestCase):
             ["Sprinkling failed on Zone 1."],
         )
 
-    async def test_manual_stop_never_reports_failure_or_completion(self):
+    async def test_manual_station_stop_records_cancelled_without_success_or_failure(self):
         task = asyncio.create_task(self.c.irrigation_runner.start_irrigation(1, 5, run_seconds=.2))
         async with asyncio.timeout(1):
             while self.c.irrigation_runner._session is None:
                 await asyncio.sleep(.001)
-        await self.c.irrigation_runner.stop_station(1)
+        self.assertTrue(await self.c.irrigation_runner.stop_station(1))
         self.assertFalse(await task)
-        self.assertIsNone(self.c.last_irrigation_result)
+        self.assertEqual(self.c.last_irrigation_result["result"], "cancelled")
+        self.assertEqual(self.c.last_irrigation_result["event"], "station_stopped")
+        self.assertIsNone(self.c.last_irrigation_failure)
+
+    async def test_manual_stop_messages_are_selected_independently_from_other_events(self):
+        self.c.config_entry.options = {
+            "notifications_enabled": True,
+            "notify_station_finished": False,
+            "notify_cycle_finished": False,
+            "notify_irrigation_failed": False,
+            "notify_manual_stop": True,
+            "notification_targets": [
+                "notify.mobile_app_xiaomi_redmi_note_14_pro_henrique",
+                "notify.mobile_app_xiaomi_redmi_note_14_pro_marta",
+            ],
+        }
+        manager = self.c.irrigation_notifications
+        for event, source, station in [
+            ("station_stopped", "manual", 1),
+            ("station_stopped", "manual_cycle", 2),
+            ("station_stopped", "automatic", 3),
+            ("cycle_stopped", "manual_cycle", None),
+            ("cycle_stopped", "automatic", None),
+            ("all_stopped", "manual", None),
+        ]:
+            await manager.report(event, source=source, station=station)
+        messages = [call[2]["message"] for call in self.c.hass.services.calls][::2]
+        self.assertEqual(messages, [
+            "Sprinkling manually stopped on station Zone 1.",
+            "Sprinkling manually stopped on station Zone 2.",
+            "Sprinkling manually stopped on station Zone 3.",
+            "Manual cycle stopped on Rainbird.",
+            "Scheduled cycle stopped on Rainbird.",
+            "All irrigation manually stopped on Rainbird.",
+        ])
+        self.assertEqual(len(self.c.hass.services.calls), 12)
+        self.assertIsNone(self.c.last_irrigation_failure)
+        self.assertEqual(self.c.last_irrigation_result["result"], "cancelled")
+
+    async def test_disabled_manual_stop_subtype_sends_no_notification(self):
+        self.c.config_entry.options = {
+            "notifications_enabled": True,
+            "notify_station_finished": True,
+            "notify_cycle_finished": True,
+            "notify_irrigation_failed": True,
+            "notify_manual_stop": False,
+            "notification_targets": ["notify.mobile_app_xiaomi_redmi_note_14_pro_henrique"],
+        }
+        manager = self.c.irrigation_notifications
+        await manager.report("station_stopped", station=1)
+        await manager.report("cycle_stopped", source="manual_cycle")
+        await manager.report("cycle_stopped", source="automatic")
+        await manager.report("all_stopped", source="manual")
+        self.assertEqual(self.c.hass.services.calls, [])
+        self.assertEqual(self.c.last_irrigation_result["result"], "cancelled")
+
+    async def test_stop_all_from_standalone_manual_watering_notifies_once(self):
+        self.c.config_entry.options = {
+            "notifications_enabled": True,
+            "notify_manual_stop": True,
+            "notification_targets": ["notify.mobile_app_xiaomi_redmi_note_14_pro_henrique"],
+        }
+        runner = self.c.irrigation_runner
+        task = asyncio.create_task(runner.start_irrigation(1, 5, run_seconds=.2))
+        async with asyncio.timeout(1):
+            while runner._session is None:
+                await asyncio.sleep(.001)
+        self.assertTrue(await runner.stop_irrigation())
+        self.assertTrue(await runner.stop_irrigation())
+        self.assertFalse(await task)
+        self.assertEqual([call[2]["message"] for call in self.c.hass.services.calls],
+                         ["All irrigation manually stopped on Rainbird."])
 
     async def test_failed_state_clears_without_erasing_failure_history(self):
         manager = self.c.irrigation_notifications
