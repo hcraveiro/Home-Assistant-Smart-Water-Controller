@@ -731,7 +731,7 @@ If the external irrigation controller automatically turns off a station after it
 
 ---
 
-## Irrigation Outcomes and Optional Notifications (V1.1.6b5)
+## Irrigation Outcomes and Optional Notifications (V1.1.6)
 
 Irrigation failures are now visible without reading the Home Assistant log.
 
