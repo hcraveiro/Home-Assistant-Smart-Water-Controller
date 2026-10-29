@@ -196,7 +196,8 @@ class IrrigationRunner:
 
     def notify_switch_change(self, station: int, state: str | None) -> None:
         """Latch loss/OFF immediately, even if a quick ON follows before the lock."""
-        if self._starting_station == station and state not in (STATE_ON, STATE_OFF):
+        if self._starting_station == station and state != STATE_ON:
+            # Catch a quick ON -> OFF even before the session worker is created.
             self._start_interrupted = True
         session = self._session
         if session is not None and session.irrigation.station == station and state != STATE_ON:
