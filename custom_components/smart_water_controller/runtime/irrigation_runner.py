@@ -217,7 +217,7 @@ class IrrigationRunner:
                 if state != STATE_ON or session.interrupted:
                     if session.irrigation.source != "automatic":
                         self._generation += 1
-                    _LOGGER.error("%s - Station %s (%s) changed to %s during irrigation; stopping session. source=%s, interrupted=%s; remaining scheduled stations will be skipped.",
+                    _LOGGER.error("%s - Station %s (%s) changed to %s during irrigation; stopping session. source=%s, interrupted=%s; automatic recovery will be evaluated after shutdown.",
                                   self.coordinator.controller_mac_address, station,
                                   self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), state,
                                   session.irrigation.source, session.interrupted)
