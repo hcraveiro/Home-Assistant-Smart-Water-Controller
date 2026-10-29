@@ -309,6 +309,84 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await new)
         self.assertTrue(all(self.c.get_state(i) == 'off' for i in range(1, 4)))
 
+    async def test_stop_station_advances_manual_cycle(self):
+        """Stop Station skips one valve but does not cancel the remaining cycle."""
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .065
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+            task = asyncio.create_task(self.runner.run_manual_cycle())
+            await self.wait_for(lambda: self.runner._session is not None)
+            self.assertTrue(await self.runner.stop_station(1))
+            await task
+
+        self.assertEqual(
+            [command[1] for command in self.c.api.commands if command[0] == "on"],
+            [1, 2, 3],
+        )
+        self.assertEqual([self.c.get_state(i) for i in range(1, 4)], ["off"] * 3)
+
+    async def test_stop_all_cancels_manual_cycle(self):
+        """Stop All must cancel all future stations."""
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .15
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+            task = asyncio.create_task(self.runner.run_manual_cycle())
+            await self.wait_for(lambda: self.runner._session is not None)
+            self.assertTrue(await self.runner.stop_irrigation())
+            await task
+
+        self.assertEqual([c[1] for c in self.c.api.commands if c[0] == "on"], [1])
+
+    async def test_stop_station_advances_scheduled_cycle(self):
+        """Skipping a scheduled station must not be treated as a fault or retried."""
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .065
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+            task = asyncio.create_task(self.runner.run_watering_cycle("08:00:00"))
+            await self.wait_for(lambda: self.runner._session is not None)
+            self.assertTrue(await self.runner.stop_station(1))
+            await task
+
+        self.assertEqual([c[1] for c in self.c.api.commands if c[0] == "on"], [1, 2, 3])
+
+    async def test_stop_station_refuses_inactive_zone(self):
+        """A station stop must never affect a different active valve."""
+        task = await self.start(station=1, seconds=.08)
+        self.assertFalse(await self.runner.stop_station(2))
+        self.assertEqual(self.c.get_state(1), "on")
+        self.assertTrue(await task)
+
+    async def test_stop_station_does_not_start_next_valve_if_stop_fails(self):
+        """A failed station shutdown must prevent opening a second valve."""
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs["run_seconds"] = .15
+            return await original(*args, **kwargs)
+
+        with patch.object(self.runner, "start_irrigation", side_effect=short_start):
+            task = asyncio.create_task(self.runner.run_manual_cycle())
+            await self.wait_for(lambda: self.runner._session is not None)
+            self.c.api.fail_off = True
+            with self.assertLogs(runtime._LOGGER, "ERROR"):
+                self.assertFalse(await self.runner.stop_station(1))
+            await task
+
+        self.assertFalse(any(cmd[0] == "on" and cmd[1] != 1 for cmd in self.c.api.commands))
+        self.assertTrue(self.c.pending_stop_stations)
+
     async def test_full_scheduled_cycle_visits_each_station(self):
         original = self.runner.start_irrigation
         async def short_start(*args, **kwargs):
