@@ -306,5 +306,16 @@
         "pirateweather": "PirateWeather"
       }
     }
+  },
+  "common": {
+    "notification_title": "Irrigation",
+    "notification_station_finished": "Sprinkling finished on station {station}.",
+    "notification_cycle_finished_manual": "Manual cycle finished on {controller}.",
+    "notification_cycle_finished_scheduled": "Scheduled cycle finished on {controller}.",
+    "notification_irrigation_failed": "Sprinkling failed on {station}.",
+    "notification_station_stopped": "Sprinkling manually stopped on station {station}.",
+    "notification_cycle_stopped_manual": "Manual cycle stopped on {controller}.",
+    "notification_cycle_stopped_scheduled": "Scheduled cycle stopped on {controller}.",
+    "notification_all_stopped": "All irrigation manually stopped on {controller}."
   }
 }
