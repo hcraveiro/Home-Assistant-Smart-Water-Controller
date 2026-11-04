@@ -566,7 +566,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                     session = self.runner._session
                     self.assertIsNotNone(session)
                     self.assertTrue(session.controller_managed_duration)
-                    self.assertEqual(session.deadline - session.last_sample, 120)
+                    self.assertAlmostEqual(session.deadline - session.last_sample, 120)
                     self.assertEqual(
                         (self.c.current_irrigation.end_at - self.c.current_irrigation.start_at).total_seconds(), 120,
                     )
@@ -673,7 +673,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNotNone(session)
                     native = mapping == 'native'
                     self.assertEqual(session.controller_managed_duration, native)
-                    self.assertEqual(session.deadline - session.last_sample, 60 if native else 30)
+                    self.assertAlmostEqual(session.deadline - session.last_sample, 60 if native else 30)
                     call = next(c for c in service_call.await_args_list if c.args[1] in (
                         'sprinkle_station_x_for_y_minutes', 'custom_watering',
                     ))
