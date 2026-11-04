@@ -21,6 +21,7 @@ from ..const import (
     SERVICE_PARAM_TYPE_STATION,
     SERVICE_PARAM_TYPE_TIME,
     SERVICE_PARAM_VALUE,
+    SOLEM_TOOLKIT_SERVICE_SPRINKLE,
 )
 from ..errors import APIConnectionError
 
@@ -197,6 +198,28 @@ class SmartWaterControllerAPI:
             raise APIConnectionError(str(exc)) from exc
         except Exception as exc:  # pylint: disable=broad-except
             raise APIConnectionError(f"Error calling service '{service_call}': {exc}") from exc
+
+    def uses_native_watering_duration(self) -> bool:
+        """Whether the mapped command self-stops after the requested duration.
+
+        Presets remain editable: an arbitrary replacement service or fixed
+        minutes override must retain explicit shutdown at local expiry.
+        """
+        action_cfg = self.service_actions.get(ACTION_SPRINKLE_STATION) or {}
+        if (not action_cfg.get(SERVICE_ACTION_ENABLED, True)
+                or (action_cfg.get(SERVICE_ACTION_SERVICE) or "").strip() != SOLEM_TOOLKIT_SERVICE_SPRINKLE):
+            return False
+        duration_params = [
+            param for param in (action_cfg.get(SERVICE_ACTION_PARAMS) or [])
+            if (param.get(SERVICE_PARAM_NAME) or "").strip() == "minutes"
+        ]
+        if len(duration_params) != 1:
+            return False
+        param = duration_params[0]
+        return (
+            (param.get(SERVICE_PARAM_TYPE) or "other").strip() == SERVICE_PARAM_TYPE_TIME
+            and not str(param.get(SERVICE_PARAM_VALUE) or "").strip()
+        )
 
     async def sprinkle_station(self, station: int, minutes: int) -> None:
         """Sprinkle a station for a number of minutes."""

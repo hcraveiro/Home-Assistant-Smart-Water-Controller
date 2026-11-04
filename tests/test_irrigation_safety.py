@@ -9,6 +9,7 @@ from unittest.mock import patch, AsyncMock, call
 
 import ha_stub
 from homeassistant.util import dt as dt_util
+from custom_components.smart_water_controller.const import SOLEM_CONTROL_METHODS
 from custom_components.smart_water_controller.errors import APIConnectionError
 from custom_components.smart_water_controller.runtime import irrigation_runner as runtime
 from custom_components.smart_water_controller.runtime.active_irrigation import ActiveIrrigationState
@@ -18,6 +19,7 @@ from custom_components.smart_water_controller.runtime.switch_tracking import Sta
 from custom_components.smart_water_controller.runtime.irrigation_notifications import IrrigationNotifications
 from custom_components.smart_water_controller.api.controller import SmartWaterControllerAPI
 from custom_components.smart_water_controller.helpers import planning
+from custom_components.smart_water_controller.flows.service_actions import build_solem_toolkit_defaults
 
 
 class FakeStates(dict):
@@ -57,6 +59,9 @@ class FakeAPI:
             for index in stations:
                 if self.coordinator.get_state(index) in ('on', 'off'):
                     self.coordinator.set_state(index, 'off')
+
+    def uses_native_watering_duration(self):
+        return True
 
     async def sprinkle_station(self, station, minutes):
         self.commands.append(('service_on', station, minutes))
@@ -103,6 +108,7 @@ class Coordinator:
         # never needed it. The service-mode start does now.
         self.controller = SimpleNamespace(state='On', device_id='controller')
         self.switch = switch
+        self.irrigation_control_method = 'switch' if switch else 'service'
         self.saved = []
         self.station_switch_tracker = StationSwitchTracker(self)
         self.api = FakeAPI(self)
@@ -544,6 +550,157 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.c.station_switch_tracker.sync()
         self.assertIsNone(self.c.current_irrigation)
 
+    async def test_solem_natural_expiry_never_sends_stop(self):
+        for method in SOLEM_CONTROL_METHODS:
+            for source in ('manual', 'automatic', 'manual_cycle'):
+                with self.subTest(method=method, source=source):
+                    self.c.switch = False
+                    self.c.irrigation_control_method = method
+                    self.c.api.commands.clear()
+                    # The planner can request fractional remaining seconds, but
+                    # Solem receives whole minutes and manages that full duration.
+                    task = asyncio.create_task(self.runner.start_irrigation(
+                        1, 2, run_seconds=64.2, source=source,
+                    ))
+                    await self.wait_for(lambda: self.runner._session is not None or task.done())
+                    session = self.runner._session
+                    self.assertIsNotNone(session)
+                    self.assertTrue(session.controller_managed_duration)
+                    self.assertEqual(session.deadline - session.last_sample, 120)
+                    self.assertEqual(
+                        (self.c.current_irrigation.end_at - self.c.current_irrigation.start_at).total_seconds(), 120,
+                    )
+                    # Advance only the test session's clock; no real controller
+                    # or two-minute delay is involved.
+                    before = self.c.sprinkle_duration_today_seconds[0]
+                    now = asyncio.get_running_loop().time()
+                    session.last_sample = now - 120
+                    session.deadline = now
+                    with patch.object(self.c.api, 'stop_sprinkle', side_effect=APIConnectionError('already idle')) as stop:
+                        with patch.object(self.runner, '_report', new_callable=AsyncMock) as report:
+                            session.wake.set()
+                            self.assertTrue(await task)
+                            report.assert_awaited_once_with('station_finished', 1, source)
+                        stop.assert_not_called()
+                    self.assertNotIn(('service_off',), self.c.api.commands)
+                    self.assertIn(('service_on', 1, 2), self.c.api.commands)
+                    self.assertEqual(self.c.stations[0].state, 'Stopped')
+                    self.assertIsNone(self.runner._session)
+                    self.assertIsNone(self.c.active_irrigation)
+                    self.assertIsNone(self.c.current_irrigation)
+                    self.assertEqual(self.c.saved[-1], ([], None))
+                    self.assertAlmostEqual(self.c.sprinkle_duration_today_seconds[0] - before, 120)
+
+    async def test_solem_cycles_finish_each_station_without_ble_stop(self):
+        original = self.runner.start_irrigation
+
+        async def expire_start(*args, **kwargs):
+            task = asyncio.create_task(original(*args, **kwargs))
+            await self.wait_for(lambda: self.runner._session is not None or task.done())
+            session = self.runner._session
+            self.assertIsNotNone(session)
+            now = asyncio.get_running_loop().time()
+            session.last_sample = now - session.irrigation.duration_minutes * 60
+            session.deadline = now
+            session.wake.set()
+            return await task
+
+        for method in SOLEM_CONTROL_METHODS:
+            for source in ('automatic', 'manual_cycle'):
+                with self.subTest(method=method, source=source):
+                    self.c.switch = False
+                    self.c.irrigation_control_method = method
+                    self.c.api.commands.clear()
+                    self.c.sprinkle_total_amount_today = [0., 0., 0.]
+                    self.c.num_stations = 1 if method == SOLEM_CONTROL_METHODS[1] else 3
+                    stations = list(range(1, self.c.num_stations + 1))
+                    for month in self.c.schedule:
+                        month['stations'] = {f'station_{station}_minutes': 5 for station in stations}
+                    with patch.object(self.runner, 'start_irrigation', side_effect=expire_start):
+                        with patch.object(self.runner, '_report', new_callable=AsyncMock) as report:
+                            if source == 'automatic':
+                                await self.runner.run_watering_cycle('08:00:00')
+                            else:
+                                await self.runner.run_manual_cycle()
+                    self.assertEqual(
+                        [entry for entry in self.c.api.commands if entry[0] == 'service_on'],
+                        [('service_on', station, 5) for station in stations],
+                    )
+                    self.assertNotIn(('service_off',), self.c.api.commands)
+                    self.assertEqual(
+                        [entry.args[:3] for entry in report.await_args_list],
+                        [('station_finished', station, source) for station in stations]
+                        + [('cycle_finished', None, source)],
+                    )
+
+    async def test_solem_explicit_stop_still_sends_stop(self):
+        for method in SOLEM_CONTROL_METHODS:
+            for stop_all in (False, True):
+                with self.subTest(method=method, stop_all=stop_all):
+                    self.c.switch = False
+                    self.c.irrigation_control_method = method
+                    self.c.api.commands.clear()
+                    task = await self.start()
+                    if stop_all:
+                        self.assertTrue(await self.runner.stop_irrigation())
+                    else:
+                        self.assertTrue(await self.runner.stop_station(1))
+                    self.assertFalse(await task)
+                    self.assertEqual(self.c.api.commands.count(('service_off',)), 1)
+
+    async def test_solem_expiry_respects_the_real_service_payload_mapping(self):
+        self.c.switch = False
+        for method, model in zip(SOLEM_CONTROL_METHODS, ('bl_ip', 'bl_nr')):
+            for mapping in ('native', 'fixed_minutes', 'custom_service', 'missing_minutes'):
+                with self.subTest(method=method, mapping=mapping):
+                    actions = build_solem_toolkit_defaults(model)
+                    watering = actions['sprinkle_station']
+                    if mapping == 'fixed_minutes':
+                        for param in watering['params']:
+                            if param['name'] == 'minutes':
+                                param['value'] = '10'
+                    elif mapping == 'custom_service':
+                        watering['service'] = 'script.custom_watering'
+                    elif mapping == 'missing_minutes':
+                        watering['params'] = [p for p in watering['params'] if p['name'] != 'minutes']
+                    service_call = AsyncMock()
+                    self.c.hass.services = SimpleNamespace(async_call=service_call)
+                    self.c.api = SmartWaterControllerAPI(self.c.hass, 'test-mac', 10, actions)
+                    self.c.irrigation_control_method = method
+                    task = asyncio.create_task(self.runner.start_irrigation(1, 1, run_seconds=30))
+                    await self.wait_for(lambda: self.runner._session is not None or task.done())
+                    session = self.runner._session
+                    self.assertIsNotNone(session)
+                    native = mapping == 'native'
+                    self.assertEqual(session.controller_managed_duration, native)
+                    self.assertEqual(session.deadline - session.last_sample, 60 if native else 30)
+                    call = next(c for c in service_call.await_args_list if c.args[1] in (
+                        'sprinkle_station_x_for_y_minutes', 'custom_watering',
+                    ))
+                    self.assertEqual(call.args[:2], tuple(watering['service'].split('.')))
+                    if mapping == 'missing_minutes':
+                        self.assertNotIn('minutes', call.args[2])
+                    else:
+                        self.assertEqual(call.args[2]['minutes'], 10 if mapping == 'fixed_minutes' else 1)
+                    session.deadline = asyncio.get_running_loop().time()
+                    session.wake.set()
+                    self.assertTrue(await task)
+                    stop_calls = [c for c in service_call.await_args_list if c.args[:2] == (
+                        'solem_toolkit', 'stop_manual_sprinkle',
+                    )]
+                    self.assertEqual(len(stop_calls), 0 if native else 1)
+
+    async def test_solem_replacement_stops_old_session_only(self):
+        self.c.switch = False
+        self.c.irrigation_control_method = SOLEM_CONTROL_METHODS[0]
+        old = await self.start()
+        new = asyncio.create_task(self.runner.start_irrigation(2, 1))
+        self.assertFalse(await old)
+        await self.wait_for(lambda: self.runner._session is not None and self.runner._session.irrigation.station == 2)
+        self.assertEqual(self.c.api.commands.count(('service_off',)), 1)
+        await self.runner.stop_station(2)
+        self.assertFalse(await new)
+
     async def test_service_mode_still_runs_a_single_session(self):
         self.c.switch = False
         self.assertTrue(await self.runner.start_irrigation(1, 5, run_seconds=.02))
@@ -551,6 +708,33 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             self.c.api.commands,
             [('controller_on',), ('service_on', 1, 5), ('service_off',)],
         )
+
+    async def test_service_cycles_preserve_start_and_stop_failure_reasons(self):
+        self.c.switch = False
+        self.c.irrigation_control_method = 'service'
+        original = self.runner.start_irrigation
+
+        async def short_start(*args, **kwargs):
+            kwargs['run_seconds'] = .01
+            return await original(*args, **kwargs)
+
+        for source in ('automatic', 'manual_cycle'):
+            for stage in ('start', 'stop'):
+                with self.subTest(source=source, stage=stage):
+                    method = 'sprinkle_station' if stage == 'start' else 'stop_sprinkle'
+                    with patch.object(self.c.api, method, side_effect=APIConnectionError('Bluetooth timeout')):
+                        with patch.object(self.runner, '_report', new_callable=AsyncMock) as report:
+                            with patch.object(self.runner, 'start_irrigation', side_effect=short_start):
+                                with self.assertLogs(runtime._LOGGER, 'ERROR'):
+                                    if source == 'automatic':
+                                        await self.runner.run_watering_cycle('08:00:00')
+                                    else:
+                                        await self.runner.run_manual_cycle()
+                    expected = ('Start failed: Bluetooth timeout' if stage == 'start'
+                                else 'Stop command failed at end of session')
+                    report.assert_awaited_once_with('irrigation_failed', 1, source, expected)
+                    # A failed generic service stop retains state for cleanup.
+                    await self.runner.stop_irrigation()
 
     async def test_service_mode_turns_the_controller_on_once_per_run(self):
         """The master switch is sent before the first watering, and only then.
@@ -817,6 +1001,24 @@ class NotificationOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.stations[1].state, "Failed")
         self.assertEqual(self.c.station_irrigation_results["2"]["reason"], "Bluetooth timeout")
         self.assertFalse(self.c.hass.services.calls)
+
+    async def test_solem_completion_records_unverified_duration_not_physical_flow(self):
+        self.c.irrigation_control_method = SOLEM_CONTROL_METHODS[0]
+        runner = self.c.irrigation_runner
+        task = asyncio.create_task(runner.start_irrigation(1, 1, source='automatic'))
+        async with asyncio.timeout(1):
+            while runner._session is None and not task.done():
+                await asyncio.sleep(.001)
+        self.assertIsNotNone(runner._session)
+        runner._session.deadline = asyncio.get_running_loop().time()
+        runner._session.wake.set()
+        self.assertTrue(await task)
+        result = self.c.station_irrigation_results['1']
+        self.assertEqual(result['result'], 'completed')
+        self.assertEqual(result['reason'], 'Controller-managed duration elapsed; water flow not verified')
+        self.assertNotIn(('service_off',), self.c.api.commands)
+        await runner._report('cycle_finished', None, 'automatic')
+        self.assertEqual(self.c.last_irrigation_result['reason'], result['reason'])
 
     async def test_selected_mobile_devices_receive_exact_fixed_messages(self):
         self.c.config_entry.options = {

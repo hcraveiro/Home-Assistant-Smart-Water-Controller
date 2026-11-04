@@ -745,6 +745,28 @@ Irrigation failures are now visible without reading the Home Assistant log.
   the last known failure.
 - Scheduled switch-based watering continues to retry once before a failure
   is reported. Intentional **Stop** and **Stop All** actions are not failures.
+- For the Solem BL-IP and BL-NR presets, the watering command includes its
+  duration and the controller shuts itself off. At natural expiry, the
+  integration clears its local session **without sending another Stop command**.
+  Manual Stop, Stop All, session replacement and interrupted-session cleanup
+  still send Stop. This applies only when the mapped action is the known
+  `solem_toolkit.sprinkle_station_x_for_y_minutes` service with a dynamic
+  `minutes` parameter. A fixed duration override, missing duration or custom
+  watering service retains explicit Stop at local expiry, even under a Solem
+  preset. Switch-based and generic service control retain their existing
+  end-of-session shutdown behavior.
+- For that native timed mapping, Solem tracking uses the same whole-minute duration sent to the controller,
+  including when rain-aware planning computes fractional remaining seconds.
+  It does not mark the station idle or advance to the next one before that
+  duration has elapsed.
+- A completed native-timed Solem station/cycle result records the reason
+  `Controller-managed duration elapsed; water flow not verified`. This is a
+  software/session outcome, **not proof that water flowed**. Duration and
+  consumption sensors remain estimates based on elapsed time and configured
+  flow rate, not measurements from the valve.
+- Service-mode failures are reported where they occur: a start failure retains
+  its exception, while an end-of-session Stop failure is identified as a Stop
+  failure rather than being relabelled as a failed watering/start command.
 - A Bluetooth service acknowledgement confirms that the command was
   accepted, but without physical valve feedback the integration cannot
   guarantee that water flowed.
