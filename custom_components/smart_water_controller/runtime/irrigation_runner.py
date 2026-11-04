@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.util import dt as dt_util
 
+from ..const import SOLEM_CONTROL_METHODS
 from ..errors import APIConnectionError
 from ..helpers import planning
 from .active_irrigation import ActiveIrrigationState
@@ -32,6 +33,7 @@ class _Session:
     irrigation: ActiveIrrigationState
     deadline: float
     last_sample: float
+    controller_managed_duration: bool = False
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     interrupted: bool = False
 
@@ -72,6 +74,10 @@ class IrrigationRunner:
         """Report final irrigation outcomes when supported by the coordinator."""
         notifier = getattr(self.coordinator, "irrigation_notifications", None)
         if notifier is not None:
+            if (reason is None and event in ("station_finished", "cycle_finished")
+                    and self.coordinator.irrigation_control_method in SOLEM_CONTROL_METHODS
+                    and self.coordinator.api.uses_native_watering_duration()):
+                reason = "Controller-managed duration elapsed; water flow not verified"
             await notifier.report(event, station=station, source=source, reason=reason)
 
     async def _publish(self) -> None:
@@ -307,7 +313,8 @@ class IrrigationRunner:
                         continue
                     _LOGGER.warning("%s - Run Cycle interrupted at station %s; remaining stations skipped.",
                                     self.coordinator.controller_mac_address, station)
-                    if generation == self._generation and not self._closing:
+                    if (generation == self._generation and not self._closing
+                            and self.coordinator._is_switch_control_method()):
                         await self._report("irrigation_failed", station, "manual_cycle", "Station did not finish watering")
                     return
             _LOGGER.info("%s - Run Cycle completed.", self.coordinator.controller_mac_address)
@@ -552,7 +559,8 @@ class IrrigationRunner:
                                         self.coordinator.controller_mac_address)
                         return
                     if not self.coordinator._is_switch_control_method():
-                        await self._report("irrigation_failed", station_id, "automatic", "Station watering command failed")
+                        # Service sessions report the actual failure at its source
+                        # (start, stop or worker), not a misleading start error here.
                         return
                     if self.coordinator.pending_stop_stations or any(
                         self._switch_state(i) != STATE_OFF for i in self._all_stations()
@@ -582,6 +590,15 @@ class IrrigationRunner:
         seconds = duration * 60 if run_seconds is None else min(duration * 60, run_seconds)
         if duration <= 0 or seconds <= 0 or station not in self._all_stations():
             raise ValueError("Station and duration must be valid positive values")
+        controller_managed_duration = (
+            self.coordinator.irrigation_control_method in SOLEM_CONTROL_METHODS
+            and self.coordinator.api.uses_native_watering_duration()
+        )
+        if controller_managed_duration:
+            # Solem accepts whole minutes and shuts itself off. Track the same
+            # duration sent to it, not the planner's fractional remaining seconds:
+            # otherwise we would mark it idle and start the next station too soon.
+            seconds = duration * 60
         async with self._lock:
             if self._closing or (expected_generation is not None and expected_generation != self._generation):
                 return False
@@ -598,6 +615,8 @@ class IrrigationRunner:
                     return False
             if self._session is not None or self.coordinator.current_irrigation is not None:
                 if not await self._stop_locked(self._all_stations(), "replacing previous session"):
+                    if not self.coordinator._is_switch_control_method():
+                        await self._report("irrigation_failed", station, source, "Stop command failed while replacing previous session")
                     return False
             if self.coordinator._is_switch_control_method():
                 # Other zones must be known too: a disconnected controller may
@@ -671,7 +690,7 @@ class IrrigationRunner:
             except Exception as exc:
                 _LOGGER.error("%s - Station %s start failed: %s", self.coordinator.controller_mac_address, station, exc)
                 await self._stop_locked([station], "start was not confirmed")
-                if source == "manual":
+                if source == "manual" or not self.coordinator._is_switch_control_method():
                     await self._report("irrigation_failed", station, source, f"Start failed: {exc}")
                 return False
             finally:
@@ -680,7 +699,10 @@ class IrrigationRunner:
             started = asyncio.get_running_loop().time()
             irrigation.start_at = dt_util.now()
             irrigation.end_at = irrigation.start_at + timedelta(seconds=seconds)
-            session = _Session(irrigation, started + seconds, started)
+            session = _Session(
+                irrigation, started + seconds, started,
+                controller_managed_duration=controller_managed_duration,
+            )
             self._session = session
             if source in ("automatic", "manual_cycle") and self._cycle_running:
                 self._cycle_has_started = True
@@ -696,7 +718,7 @@ class IrrigationRunner:
         return await asyncio.shield(worker)
 
     async def _run_session(self, session: _Session) -> bool:
-        """Account confirmed ON time and stop only while this session owns I/O."""
+        """Account session time; Solem estimates end without redundant stop I/O."""
         station = session.irrigation.station
         try:
             while True:
@@ -731,9 +753,23 @@ class IrrigationRunner:
                     self.coordinator.sprinkle_duration_today_seconds[station - 1] += elapsed
                     if now >= session.deadline:
                         self.coordinator.last_sprinkle = dt_util.now()
+                        if session.controller_managed_duration:
+                            # The timed command already tells Solem when to stop.
+                            # Expiry is not a physical flow/status confirmation and
+                            # must not trigger a second BLE command to an idle valve.
+                            self._invalidate_session()
+                            self.coordinator.active_irrigation = None
+                            self.coordinator._clear_current_irrigation()
+                            self.coordinator.stations[station - 1].state = "Stopped"
+                            await self.coordinator.save_persistent_data()
+                            await self._publish()
+                            await self._report("station_finished", station, session.irrigation.source)
+                            return True
                         stopped = await self._stop_locked([station], "session duration completed")
                         if stopped:
                             await self._report("station_finished", station, session.irrigation.source)
+                        elif not self.coordinator._is_switch_control_method():
+                            await self._report("irrigation_failed", station, session.irrigation.source, "Stop command failed at end of session")
                         elif session.irrigation.source == "manual":
                             await self._report("irrigation_failed", station, "manual", "Failed to confirm station shutdown")
                         return stopped
@@ -743,13 +779,13 @@ class IrrigationRunner:
                 if self._session is session:
                     await self._stop_locked([station], "session worker cancelled")
             raise
-        except Exception:
+        except Exception as exc:
             _LOGGER.exception("%s - Irrigation session failed.", self.coordinator.controller_mac_address)
             async with self._lock:
                 if self._session is session:
                     await self._stop_locked([station], "session worker failed")
-            if session.irrigation.source == "manual":
-                await self._report("irrigation_failed", station, "manual", "Irrigation session failed unexpectedly")
+            if session.irrigation.source == "manual" or not self.coordinator._is_switch_control_method():
+                await self._report("irrigation_failed", station, session.irrigation.source, f"Irrigation session failed unexpectedly: {exc}")
             return False
 
     async def stop_station(self, station: int) -> bool:
