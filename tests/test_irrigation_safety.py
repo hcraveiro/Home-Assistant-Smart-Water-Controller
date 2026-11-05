@@ -159,6 +159,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.c = Coordinator()
         self.runner = self.c.irrigation_runner
         self.patches = [patch.object(runtime, 'CONFIRM_TIMEOUT', .04),
+                        patch.object(runtime, 'SERVICE_COMMAND_TIMEOUT', .04),
                         patch.object(runtime, 'SAMPLE_INTERVAL', .005),
                         patch.object(runtime, 'RETRY_INTERVAL', .01)]
         for item in self.patches:
@@ -180,6 +181,216 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(1):
             while not predicate():
                 await asyncio.sleep(.001)
+
+    async def test_service_unknown_start_retains_stop_intent_and_recovers_after_restart(self):
+        self.c.switch = False
+        self.c.irrigation_control_method = 'service'
+        self.c.api.sprinkle_station = AsyncMock(side_effect=TimeoutError('accepted then lost'))
+        self.c.api.stop_sprinkle = AsyncMock(side_effect=RuntimeError('offline'))
+        self.assertFalse(await self.runner.start_irrigation(1, 5))
+        self.assertEqual(self.c.pending_stop_stations, [1])
+        self.assertFalse(await self.runner.start_irrigation(2, 5))
+        self.assertEqual(self.c.api.sprinkle_station.await_count, 1)
+        saved_pending, saved_active = deepcopy(self.c.saved[-1])
+        await self.runner.async_close()
+        restarted = Coordinator(switch=False)
+        restarted.pending_stop_stations = saved_pending
+        restarted.active_irrigation = saved_active
+        try:
+            await restarted.irrigation_runner.restore_active_irrigation()
+            self.assertIn(('service_off',), restarted.api.commands)
+            self.assertEqual(restarted.pending_stop_stations, [])
+            self.assertIsNone(restarted.active_irrigation)
+        finally:
+            await restarted.irrigation_runner.async_close()
+
+    async def test_service_command_timeout_releases_lock_for_off(self):
+        self.c.switch = False
+        self.c.irrigation_control_method = 'service'
+        entered = asyncio.Event()
+        async def hung_start(*args):
+            entered.set()
+            await asyncio.Event().wait()
+        self.c.api.sprinkle_station = hung_start
+        task = asyncio.create_task(self.runner.start_irrigation(1, 5))
+        await entered.wait()
+        async with asyncio.timeout(.5):
+            await self.runner.turn_controller_off()
+            self.assertFalse(await task)
+        self.assertEqual(self.c.controller.state, 'Off')
+        self.assertIsNone(self.runner._session)
+        self.assertIn(('controller_off',), self.c.api.commands)
+
+    async def test_service_stop_timeout_preserves_intent_and_releases_lock(self):
+        self.c.switch = False
+        self.c.irrigation_control_method = 'service'
+        task = await self.start(seconds=5)
+        async def hung_stop():
+            await asyncio.Event().wait()
+        self.c.api.stop_sprinkle = hung_stop
+        async with asyncio.timeout(.5):
+            self.assertFalse(await self.runner.stop_irrigation())
+        self.assertTrue(self.c.pending_stop_stations)
+        self.assertFalse(await task)
+        self.c.api.stop_sprinkle = AsyncMock()
+        await self.wait_for(lambda: not self.c.pending_stop_stations)
+
+    async def test_off_cancels_cycle_without_starting_next_zone(self):
+        task = asyncio.create_task(self.runner.run_manual_cycle())
+        await self.wait_for(lambda: self.runner._session is not None)
+        await self.runner.turn_controller_off()
+        await task
+        self.assertEqual([c[1] for c in self.c.api.commands if c[0] == 'on'], [1])
+        self.assertIsNone(self.c.current_irrigation)
+        self.assertIsNone(self.runner._session)
+
+    async def test_caller_cancelled_cycle_stops_shielded_worker(self):
+        task = asyncio.create_task(self.runner.run_manual_cycle())
+        await self.wait_for(lambda: self.runner._session is not None)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        await self.wait_for(lambda: not self.runner._workers)
+        self.assertEqual(self.c.get_state(1), 'off')
+        self.assertIsNone(self.runner._session)
+        self.assertEqual(self.c.pending_stop_stations, [])
+
+    async def test_cancelled_stop_persistence_retains_tracked_cleanup(self):
+        task = await self.start(seconds=5)
+        original_save = self.c.save_persistent_data
+        entered = asyncio.Event()
+        async def blocked_save():
+            entered.set()
+            await asyncio.Event().wait()
+        self.c.save_persistent_data = blocked_save
+        stop = asyncio.create_task(self.runner.stop_irrigation())
+        await entered.wait()
+        stop.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await stop
+        self.c.save_persistent_data = original_save
+        self.assertEqual(self.c.pending_stop_stations, [1, 2, 3])
+        await self.wait_for(lambda: not self.c.pending_stop_stations)
+        self.assertEqual(self.c.get_state(1), 'off')
+        self.assertFalse(await task)
+
+    async def test_cancelled_start_persistence_still_stops_valve(self):
+        original_save = self.c.save_persistent_data
+        entered = asyncio.Event()
+        first = True
+        async def block_first_save():
+            nonlocal first
+            if first:
+                first = False
+                entered.set()
+                await asyncio.Event().wait()
+            await original_save()
+        self.c.save_persistent_data = block_first_save
+        # Even before ON was sent, cleanup must conservatively discharge intent.
+        task = asyncio.create_task(self.runner.start_irrigation(1, 5))
+        await entered.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertIn(('off', 1), self.c.api.commands)
+        self.assertEqual(self.c.pending_stop_stations, [])
+        self.assertIsNone(self.c.active_irrigation)
+
+    async def test_cancelled_service_start_sends_cleanup_stop(self):
+        self.c.switch = False
+        self.c.irrigation_control_method = 'service'
+        entered = asyncio.Event()
+        async def accepted_start(*args):
+            entered.set()
+            await asyncio.Event().wait()
+        self.c.api.sprinkle_station = accepted_start
+        task = asyncio.create_task(self.runner.start_irrigation(1, 5))
+        await entered.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertIn(('service_off',), self.c.api.commands)
+        self.assertIsNone(self.c.active_irrigation)
+        self.assertIsNone(self.runner._starting_station)
+
+    async def test_obsolete_successful_stop_retry_does_not_touch_new_session(self):
+        for switch in (False, True):
+            with self.subTest(switch=switch):
+                self.c.switch = switch
+                self.c.irrigation_control_method = 'switch' if switch else 'service'
+                old = await self.start(seconds=5)
+                entered = asyncio.Event()
+                release = asyncio.Event()
+                method = 'turn_off_station_switch' if switch else 'stop_sprinkle'
+                original = getattr(self.c.api, method)
+                first = True
+                async def gated_stop(*args):
+                    nonlocal first
+                    if first:
+                        first = False
+                        entered.set()
+                        await release.wait()
+                    await original(*args)
+                setattr(self.c.api, method, gated_stop)
+                with patch.object(runtime, 'RETRY_INTERVAL', .05):
+                    stop = asyncio.create_task(self.runner.stop_irrigation())
+                    await entered.wait()
+                    # Give the registered retry ownership of its initial sleep.
+                    await asyncio.sleep(.005)
+                    self.assertIsNotNone(self.runner._retry_task)
+                    release.set()
+                    self.assertTrue(await stop)
+                    self.assertFalse(await old)
+                    new = await self.start(station=2, seconds=5)
+                    session = self.runner._session
+                    active = self.c.active_irrigation
+                    commands = list(self.c.api.commands)
+                    await asyncio.sleep(.07)
+                    self.assertIs(self.runner._session, session)
+                    self.assertIs(self.c.active_irrigation, active)
+                    self.assertIs(self.c.current_irrigation, active)
+                    self.assertEqual(self.c.api.commands, commands)
+                    self.assertFalse(new.done())
+                    # The helper itself must also be a no-op with empty intent.
+                    async with self.runner._lock:
+                        self.assertTrue(await self.runner._attempt_pending_stops_locked())
+                    self.assertIs(self.c.active_irrigation, active)
+                    self.assertEqual(self.c.api.commands, commands)
+                    await self.runner.stop_irrigation()
+                    self.assertFalse(await new)
+                setattr(self.c.api, method, original)
+
+    def test_service_budget_respects_configured_bluetooth_timeout(self):
+        with patch.object(runtime, 'SERVICE_COMMAND_TIMEOUT', 60.0):
+            self.assertEqual(self.runner._service_command_timeout(), 60.0)
+            self.c.api.bluetooth_timeout = 15
+            self.assertEqual(self.runner._service_command_timeout(), 60.0)
+            self.c.api.bluetooth_timeout = 45
+            self.assertEqual(self.runner._service_command_timeout(), 135.0)
+            for invalid in (None, 'invalid', float('inf'), float('nan'), -1):
+                self.c.api.bluetooth_timeout = invalid
+                self.assertEqual(self.runner._service_command_timeout(), 60.0)
+
+    async def test_controller_off_ignored_while_closing(self):
+        self.runner._closing = True
+        await self.runner.turn_controller_off()
+        self.assertEqual(self.c.api.commands, [])
+
+    async def test_master_commands_do_not_overlap(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def gated_on():
+            entered.set()
+            await release.wait()
+        self.c.api.turn_on = gated_on
+        on = asyncio.create_task(self.runner.turn_controller_on())
+        await entered.wait()
+        off = asyncio.create_task(self.runner.turn_controller_off())
+        await asyncio.sleep(.005)
+        self.assertNotIn(('controller_off',), self.c.api.commands)
+        release.set()
+        await asyncio.gather(on, off)
+        self.assertEqual(self.c.controller.state, 'Off')
 
     async def test_sequential_zones_are_not_cancelled_by_previous_cleanup(self):
         for station in (1, 2, 3):

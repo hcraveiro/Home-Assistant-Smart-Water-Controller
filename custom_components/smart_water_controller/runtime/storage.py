@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
+from time import monotonic
 from datetime import datetime
 import json
 import logging
@@ -68,16 +71,26 @@ class IrrigationStorage:
         station_name_resolver: Callable[[int | None], str | None],
         log_prefix: str = "",
         legacy_storage_key: str | None = None,
+        monotonic_clock: Callable[[], float] = monotonic,
+        unchanged_retry_seconds: float = 3600,
     ) -> None:
         """Initialize irrigation storage."""
-        self._store = Store(hass, 1, storage_key)
-        self._legacy_store = Store(hass, 1, legacy_storage_key) if legacy_storage_key else None
+        self._store = Store(hass, 1, storage_key, atomic_writes=True)
+        self._legacy_store = (
+            Store(hass, 1, legacy_storage_key, atomic_writes=True)
+            if legacy_storage_key else None
+        )
         self._num_stations = num_stations
         self._station_name_resolver = station_name_resolver
         self._log_prefix = log_prefix
-        # Serialized snapshot of what is already on disk, so an unchanged state
-        # is not rewritten. See async_save().
+        if unchanged_retry_seconds <= 0:
+            raise ValueError("unchanged_retry_seconds must be positive")
+        self._monotonic_clock = monotonic_clock
+        self._unchanged_retry_seconds = unchanged_retry_seconds
+        self._save_lock = asyncio.Lock()
+        # A normally returned save is an attempt, not proof of disk durability.
         self._saved_fingerprint: str | None = None
+        self._last_save_attempt: float | None = None
 
     def update_num_stations(self, num_stations: int) -> None:
         """Update the expected number of stations."""
@@ -91,7 +104,12 @@ class IrrigationStorage:
             if storage_data:
                 # Preserve the legacy copy. Only an unambiguous single generic
                 # controller may migrate the formerly shared irrigation_None key.
-                await self._store.async_save(storage_data)
+                async with self._save_lock:
+                    await self._store.async_save(deepcopy(storage_data))
+                    # Migration is also only an attempt; the next normal save
+                    # must not be suppressed by any previous fingerprint.
+                    self._saved_fingerprint = None
+                    self._last_save_attempt = None
                 _LOGGER.info("%sMigrated legacy controller storage to an entry-specific key.", self._log_prefix)
 
         if not storage_data:
@@ -102,31 +120,46 @@ class IrrigationStorage:
         _LOGGER.debug("%sPersistent data loaded.", self._log_prefix)
         return state
 
-    async def async_save(self, state: PersistentIrrigationState) -> None:
-        """Save persistent state, but only if it actually changed.
+    async def async_save(
+        self, state: PersistentIrrigationState, *, force: bool = False
+    ) -> None:
+        """Attempt to save a snapshot, with bounded deduplication of idle polls.
 
-        `async_update_all_sensors()` saves on every coordinator poll, i.e. once
-        a minute, and `Store.async_save()` rewrites the JSON file immediately:
-        that was ~1440 writes a day to `.storage` even with the system idle,
-        which is pointless flash wear on an SD card or eMMC installation.
-        Comparing a serialized snapshot instead of the dict itself is
-        deliberate: the payload holds references to the coordinator's live
-        lists and dicts, which are mutated in place, so a stored dict would
-        silently change under us and make an unchanged state look identical
-        when it is not (and vice versa).
+        HA Store can swallow WriteError and return normally. A fingerprint is
+        therefore only a short-lived record of an attempt, never confirmation
+        of durability. Retry unchanged data hourly (on the next save call),
+        rather than rewriting it every minute or suppressing retries forever.
+        Safety-intent callers may explicitly bypass deduplication with force.
+        Atomic replacement protects file integrity, not fsync durability.
         """
-        storage_data = self._state_to_storage(state)
+        # Snapshot ALL nested coordinator data before the first await, including
+        # waiting for another writer. Store must never receive live containers.
+        storage_data = deepcopy(self._state_to_storage(state))
         fingerprint = _fingerprint(storage_data)
 
-        if fingerprint is not None and fingerprint == self._saved_fingerprint:
-            _LOGGER.debug(
-                "%sPersistent data unchanged, skipping write.", self._log_prefix)
-            return
+        async with self._save_lock:
+            now = self._monotonic_clock()
+            if (
+                not force
+                and fingerprint is not None
+                and fingerprint == self._saved_fingerprint
+                and self._last_save_attempt is not None
+                and 0 <= now - self._last_save_attempt < self._unchanged_retry_seconds
+            ):
+                _LOGGER.debug(
+                    "%sPersistent data unchanged, skipping write.", self._log_prefix)
+                return
 
-        await self._store.async_save(storage_data)
-        # Only after a successful write: a failed one must be retried.
-        self._saved_fingerprint = fingerprint
-        _LOGGER.debug("%sPersistent data saved.", self._log_prefix)
+            try:
+                await self._store.async_save(storage_data)
+            except BaseException:
+                # Includes cancellation: never let a failed attempt suppress a retry.
+                self._saved_fingerprint = None
+                self._last_save_attempt = None
+                raise
+            self._saved_fingerprint = fingerprint
+            self._last_save_attempt = self._monotonic_clock()
+            _LOGGER.debug("%sPersistent data save attempted.", self._log_prefix)
 
     def _default_state(self) -> PersistentIrrigationState:
         """Return default persistent state."""

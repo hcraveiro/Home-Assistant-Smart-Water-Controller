@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 import logging
+import math
 from typing import TYPE_CHECKING
 
 from homeassistant.const import STATE_OFF, STATE_ON
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 CONFIRM_TIMEOUT = 10.0
+SERVICE_COMMAND_TIMEOUT = 60.0
 RETRY_INTERVAL = 5.0
 SAMPLE_INTERVAL = 1.0
 
@@ -61,6 +63,17 @@ class IrrigationRunner:
         # Whether this run has already told the controller to turn on. See the
         # comment in start_irrigation(); reset by turn_controller_off().
         self._controller_on_confirmed = False
+
+    def _service_command_timeout(self) -> float:
+        """Allow BLE connect/ACK retries without holding ownership indefinitely."""
+        try:
+            configured = float(getattr(self.coordinator.api, "bluetooth_timeout", 0))
+        except (TypeError, ValueError):
+            configured = 0.0
+        if not math.isfinite(configured) or configured < 0:
+            configured = 0.0
+        budget = configured * 3
+        return max(SERVICE_COMMAND_TIMEOUT, budget if math.isfinite(budget) else 0.0)
 
     def _switch_state(self, station: int) -> str | None:
         entity_id = self.coordinator.station_switch_tracker.get_station_switch_entity_id(station)
@@ -134,6 +147,11 @@ class IrrigationRunner:
             while self.coordinator.pending_stop_stations and not self._closing:
                 await asyncio.sleep(RETRY_INTERVAL)
                 async with self._lock:
+                    # The stop may have succeeded while this retry was asleep.
+                    # Never let an obsolete retry touch a replacement session.
+                    if not self.coordinator.pending_stop_stations:
+                        continue
+                    await self.coordinator.save_persistent_data()
                     await self._attempt_pending_stops_locked()
                     await self._publish()
         except asyncio.CancelledError:
@@ -147,7 +165,27 @@ class IrrigationRunner:
                 self._ensure_retry()
 
     async def _attempt_pending_stops_locked(self) -> bool:
-        """Only a successful command AND an OFF state discharge a stop intent."""
+        """Discharge acknowledged stops; switches additionally require OFF state.
+
+        Service acknowledgement is not evidence of physical water flow stopping.
+        """
+        if not self.coordinator.pending_stop_stations:
+            return True
+        if not self.coordinator._is_switch_control_method():
+            try:
+                async with asyncio.timeout(self._service_command_timeout()):
+                    await self.coordinator.api.stop_sprinkle()
+            except Exception:
+                _LOGGER.exception("Controller stop failed; durable intent retained")
+                self._ensure_retry()
+                return False
+            self.coordinator.pending_stop_stations = []
+            self.coordinator.active_irrigation = None
+            self.coordinator._clear_current_irrigation()
+            for station_state in self.coordinator.stations:
+                station_state.state = "Stopped"
+            await self.coordinator.save_persistent_data()
+            return True
         for station in list(self.coordinator.pending_stop_stations):
             if self._switch_state(station) not in (STATE_ON, STATE_OFF):
                 if station not in self._unavailable_logged:
@@ -183,31 +221,19 @@ class IrrigationRunner:
         """Invalidate ownership before awaiting hardware or storage."""
         self._invalidate_session()
         _LOGGER.info("%s - Stopping irrigation: %s", self.coordinator.controller_mac_address, reason)
-        if self.coordinator._is_switch_control_method():
-            self.coordinator.pending_stop_stations = sorted(
-                set(self.coordinator.pending_stop_stations) | set(stations)
-            )
-            # Persist BEFORE attempting I/O; failures or restart must not lose the stop.
-            await self.coordinator.save_persistent_data()
-            stopped = await self._attempt_pending_stops_locked()
-        else:
-            try:
-                await self.coordinator.api.stop_sprinkle()
-            except Exception:
-                _LOGGER.exception("%s - Controller stop failed.", self.coordinator.controller_mac_address)
-                return False
-            self.coordinator.active_irrigation = None
-            self.coordinator._clear_current_irrigation()
-            for station in self.coordinator.stations:
-                station.state = "Stopped"
-            stopped = True
+        self.coordinator.pending_stop_stations = sorted(
+            set(self.coordinator.pending_stop_stations) | set(stations)
+        )
+        # Register recovery before the first cancellable persistence await.
+        # A cancelled caller must not remove ownership of an unresolved valve.
+        self._ensure_retry()
+        await self.coordinator.save_persistent_data()
+        stopped = await self._attempt_pending_stops_locked()
         await self._publish()
         return stopped
 
     async def restore_active_irrigation(self) -> None:
         """Stop interrupted sessions on startup; never resume an uncertain valve."""
-        if not self.coordinator._is_switch_control_method():
-            return
         active = self.coordinator.active_irrigation
         if active is not None or self.coordinator.pending_stop_stations:
             async with self._lock:
@@ -647,10 +673,10 @@ class IrrigationRunner:
             # Store the start intent first: a timeout can occur after the
             # controller has accepted ON, so even failed starts need shutdown.
             self.coordinator.active_irrigation = irrigation
-            await self.coordinator.save_persistent_data()
             self._starting_station = station
             self._start_interrupted = False
             try:
+                await self.coordinator.save_persistent_data()
                 if self.coordinator._is_switch_control_method():
                     async with asyncio.timeout(CONFIRM_TIMEOUT):
                         await self.coordinator.api.turn_on_station_switch(station, duration)
@@ -671,7 +697,8 @@ class IrrigationRunner:
                     # first place.
                     if not self._controller_on_confirmed:
                         try:
-                            await self.coordinator.api.turn_on()
+                            async with asyncio.timeout(self._service_command_timeout()):
+                                await self.coordinator.api.turn_on()
                         except APIConnectionError as exc:
                             # Not fatal: the controller may well be on already.
                             # Watering anyway is the lesser risk, and the log
@@ -683,7 +710,8 @@ class IrrigationRunner:
                         else:
                             self.coordinator.controller.state = "On"
                             self._controller_on_confirmed = True
-                    await self.coordinator.api.sprinkle_station(station, duration)
+                    async with asyncio.timeout(self._service_command_timeout()):
+                        await self.coordinator.api.sprinkle_station(station, duration)
             except asyncio.CancelledError:
                 await self._stop_locked([station], "start task cancelled")
                 raise
@@ -714,8 +742,19 @@ class IrrigationRunner:
             worker = self.hass.async_create_task(self._run_session(session))
             self._workers.add(worker)
             worker.add_done_callback(self._workers.discard)
-            await self._publish()
-        return await asyncio.shield(worker)
+            try:
+                await self._publish()
+            except asyncio.CancelledError:
+                await self._stop_locked([station], "start publication cancelled")
+                raise
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            async with self._lock:
+                if self._session is session:
+                    self._generation += 1
+                    await self._stop_locked([station], "session caller cancelled")
+            raise
 
     async def _run_session(self, session: _Session) -> bool:
         """Account session time; Solem estimates end without redundant stop I/O."""
@@ -813,6 +852,7 @@ class IrrigationRunner:
 
     async def stop_irrigation(self) -> bool:
         """Explicit Stop All cancels the controller's sequence or active watering."""
+        self._generation += 1
         async with self._lock:
             session = self._session
             active = session.irrigation if session is not None else self.coordinator.active_irrigation
@@ -854,57 +894,34 @@ class IrrigationRunner:
                 await task
 
     async def turn_controller_on(self) -> None:
-        """Turn irrigation controller on."""
-        _LOGGER.info(
-            "%s - Turning irrigation controller on...",
-            self.coordinator.controller_mac_address,
-        )
-
-        try:
-            await self.coordinator.api.turn_on()
-        except APIConnectionError:
-            _LOGGER.error(
-                "%s - Failed due to connection error.",
-                self.coordinator.controller_mac_address,
-            )
-            return
-
-        self.coordinator.controller.state = "On"
-        self._controller_on_confirmed = True
-
-        data = await self.coordinator.async_update_all_sensors()
-        self.coordinator.async_set_updated_data(data)
-
-        _LOGGER.info(
-            "%s - Irrigation controller turned on.",
-            self.coordinator.controller_mac_address,
-        )
+        """Serialize master commands with station transitions."""
+        async with self._lock:
+            if self._closing:
+                return
+            try:
+                async with asyncio.timeout(self._service_command_timeout()):
+                    await self.coordinator.api.turn_on()
+            except Exception:
+                _LOGGER.exception("Controller On failed")
+                return
+            self.coordinator.controller.state = "On"
+            self._controller_on_confirmed = True
+            await self._publish()
 
     async def turn_controller_off(self) -> None:
-        """Turn irrigation controller off."""
-        _LOGGER.info(
-            "%s - Turning irrigation controller off..",
-            self.coordinator.controller_mac_address,
-        )
-
-        try:
-            await self.coordinator.api.turn_off()
-        except APIConnectionError:
-            _LOGGER.error(
-                "%s - Failed due to connection error.",
-                self.coordinator.controller_mac_address,
-            )
-            return
-
-        self.coordinator.controller.state = "Off"
-        # Re-arm the preventive turn_on: after a deliberate Off, the next
-        # sprinkle has to switch the controller back on or no water comes out.
-        self._controller_on_confirmed = False
-
-        data = await self.coordinator.async_update_all_sensors()
-        self.coordinator.async_set_updated_data(data)
-
-        _LOGGER.info(
-            "%s - Irrigation controller turned off.",
-            self.coordinator.controller_mac_address,
-        )
+        """Cancel the sequence before waiting for a bounded station command."""
+        self._generation += 1
+        self._skip_station = None
+        async with self._lock:
+            if self._closing:
+                return
+            self._controller_on_confirmed = False
+            await self._stop_locked(self._all_stations(), "controller Off requested")
+            try:
+                async with asyncio.timeout(self._service_command_timeout()):
+                    await self.coordinator.api.turn_off()
+            except Exception:
+                _LOGGER.exception("Controller Off failed")
+                return
+            self.coordinator.controller.state = "Off"
+            await self._publish()

@@ -29,16 +29,31 @@ for name, path in [
 
 module('homeassistant', __path__=[])
 module('homeassistant.core', HomeAssistant=object, callback=lambda fn: fn)
-module('homeassistant.const', STATE_ON='on', STATE_OFF='off', CONF_SENSORS='sensors')
+module('homeassistant.const', STATE_ON='on', STATE_OFF='off', CONF_SENSORS='sensors',
+       CONF_NAME='name', CONF_SCAN_INTERVAL='scan_interval')
 module('homeassistant.exceptions', HomeAssistantError=RuntimeError)
 module('homeassistant.helpers', __path__=[])
 module('homeassistant.helpers.event', async_track_state_change_event=lambda *args: lambda: None)
 module('homeassistant.helpers.entity_registry', async_get=lambda hass: hass.registry)
 
 
+def selector(config):
+    """Shared selector boundary; test imports must not depend on file order."""
+    if 'select' in config:
+        import voluptuous as vol
+        if config['select'].get('custom_value'):
+            return str
+        return vol.In(config['select']['options'])
+    return lambda value: value
+
+
+module('homeassistant.helpers.selector', selector=selector)
+
+
 class Store:
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         self.data = None
+        self.atomic_writes = kwargs.get('atomic_writes', False)
 
     async def async_save(self, value):
         self.data = value
