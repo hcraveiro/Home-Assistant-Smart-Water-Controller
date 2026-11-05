@@ -1039,6 +1039,21 @@ its amount is not transferred to a later slot. During the autumn clock change,
 a repeated time is counted and scheduled once, at its first occurrence. Valid
 slots missed for other reasons still contribute to the daily remaining target.
 
+### Weather forecast attributes
+
+The `forecast` attribute of “Will it rain today” exposes only compact blocks
+that overlap the remaining local day, including the block ending at midnight.
+It retains `dt` (OWM), `dt_txt`, `pop` and `rain["3h"]`, and adds explicit UTC
+`start` / `end` timestamps. These describe the original provider block: OWM's
+stamp is its end, while PirateWeather's display stamp is its start. Display
+amounts are not re-prorated. Full temperature/wind/pressure payloads and future
+days are no longer exposed through this attribute. Custom consumers of those
+removed fields must use a dedicated weather entity instead.
+
+Complete provider caches and normalized rain-accounting intervals remain
+internal and unchanged. Presentation is bounded to keep Recorder attributes
+below Home Assistant's 16 KB limit; it does not change rain or watering decisions.
+
 ### Regression tests
 
 Run `python -m unittest discover -s tests -v` and
