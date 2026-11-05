@@ -59,6 +59,7 @@ from .service_actions import (
     available_service_actions,
     build_solem_toolkit_defaults,
     find_first_mac_in_enabled_actions,
+    solem_params_match_identity,
     parse_action_params_form,
     parse_service_config_form,
 )
@@ -247,11 +248,23 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
         params, param_errors = parse_action_params_form(user_input)
         errors.update(param_errors)
 
+        if self._input_data.get(IRRIGATION_CONTROL_METHOD) in SOLEM_CONTROL_METHODS:
+            identity = (
+                self._reconfigure_entry.unique_id if self._reconfigure_entry is not None
+                else find_first_mac_in_enabled_actions(self._input_data.get(SERVICE_ACTIONS, {}))
+            )
+            identity = identity or self._input_data.get(CONTROLLER_MAC_ADDRESS) or find_first_mac_in_enabled_actions({
+                action: {SERVICE_ACTION_ENABLED: True, SERVICE_ACTION_PARAMS: params}
+            })
+            if not solem_params_match_identity(params, identity or ""):
+                errors["base"] = "mac_mismatch"
+
         if errors:
             return await self._async_show_action_form(action=action, errors=errors, user_input=user_input)
 
-        self._input_data.setdefault(SERVICE_ACTIONS, {}).setdefault(action, {})
-        self._input_data[SERVICE_ACTIONS][action].update(
+        candidate = deepcopy(self._input_data)
+        candidate.setdefault(SERVICE_ACTIONS, {}).setdefault(action, {})
+        candidate[SERVICE_ACTIONS][action].update(
             {
                 SERVICE_ACTION_ENABLED: True,
                 SERVICE_ACTION_SERVICE: service_call,
@@ -260,19 +273,21 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if self._selected_actions:
+            self._input_data = candidate
             return await self._async_goto_next_action_step()
 
         mac_value = find_first_mac_in_enabled_actions(
-            self._input_data.get(SERVICE_ACTIONS, {})
+            candidate.get(SERVICE_ACTIONS, {})
         )
 
-        if not mac_value and self._input_data.get(IRRIGATION_CONTROL_METHOD) in SOLEM_CONTROL_METHODS:
+        if not mac_value and self._reconfigure_entry is None and self._input_data.get(IRRIGATION_CONTROL_METHOD) in SOLEM_CONTROL_METHODS:
             return await self._async_show_action_form(
                 action=action,
                 errors={"base": "mac_required"},
             )
 
-        if mac_value:
+        self._input_data = candidate
+        if mac_value and self._reconfigure_entry is None:
             await self.async_set_unique_id(normalize_mac_address(mac_value))
             if self._reconfigure_entry is None:
                 self._abort_if_unique_id_configured()
@@ -503,7 +518,6 @@ class SmartWaterControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                         options={**self._reconfigure_entry.options, **notifications},
                         title=title,
                     )
-                    await self.hass.config_entries.async_reload(self._reconfigure_entry.entry_id)
                     return self.async_abort(reason="reconfigure_successful")
 
                 return self.async_create_entry(title=title, data=self._input_data)

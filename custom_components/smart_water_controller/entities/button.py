@@ -71,6 +71,19 @@ async def async_setup_entry(
             ]
         )
 
+    # The old generic run-cycle ID was shared. Migrate only an entity already
+    # attributed to this entry, and never overwrite the destination ID.
+    if not coordinator.controller_mac_address:
+        from homeassistant.helpers import entity_registry as er
+        registry = er.async_get(hass)
+        old_id = registry.async_get_entity_id("button", "smart_water_controller", "-run-cycle")
+        new_uid = f"{coordinator.controller_unique_prefix}-run-cycle"
+        new_id = registry.async_get_entity_id("button", "smart_water_controller", new_uid)
+        if old_id and not new_id:
+            old_entry = registry.async_get(old_id)
+            if old_entry and old_entry.config_entry_id == config_entry.entry_id:
+                registry.async_update_entity(old_id, new_unique_id=new_uid)
+
     # One controller-level Run Cycle button per config entry.
     controller_device = next((device for device in coordinator.data if device.get("device_type") == "ON_BUTTON"), None)
     if controller_device is not None:
@@ -100,7 +113,7 @@ class IrrigationStartButton(SmartWaterControllerButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        asyncio.create_task(self.coordinator.start_irrigation(int(self.device_id.rsplit("_", 1)[-1])))
+        self.coordinator.create_task(self.coordinator.start_irrigation(int(self.device_id.rsplit("_", 1)[-1])))
 
 class IrrigationStopButton(SmartWaterControllerButtonEntity):
     """Button entity to manually stop irrigation."""
@@ -111,7 +124,7 @@ class IrrigationStopButton(SmartWaterControllerButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        asyncio.create_task(self.coordinator.stop_irrigation())
+        self.coordinator.create_task(self.coordinator.stop_irrigation())
 
 class IrrigationStopStationButton(SmartWaterControllerButtonEntity):
     """Stop only the active station, without cancelling the remaining cycle."""
@@ -119,7 +132,7 @@ class IrrigationStopStationButton(SmartWaterControllerButtonEntity):
     async def async_press(self) -> None:
         """Stop the named station; the runner manages sequential continuation."""
         station = int(self.device_id.rsplit("_", 1)[-1])
-        self.hass.async_create_task(self.coordinator.stop_station(station))
+        self.coordinator.create_task(self.coordinator.stop_station(station))
 
 
 class ControllerOnButton(SmartWaterControllerButtonEntity):
@@ -131,7 +144,7 @@ class ControllerOnButton(SmartWaterControllerButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        asyncio.create_task(self.coordinator.turn_controller_on())
+        self.coordinator.create_task(self.coordinator.turn_controller_on())
 
 class ControllerOffButton(SmartWaterControllerButtonEntity):
     """Button entity to manually stop irrigation."""
@@ -142,7 +155,7 @@ class ControllerOffButton(SmartWaterControllerButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        asyncio.create_task(self.coordinator.turn_controller_off())
+        self.coordinator.create_task(self.coordinator.turn_controller_off())
 
 
 class IrrigationRunCycleButton(SmartWaterControllerButtonEntity):
@@ -156,7 +169,7 @@ class IrrigationRunCycleButton(SmartWaterControllerButtonEntity):
 
     @property
     def unique_id(self) -> str:
-        return f"{self._get_controller_unique_id()}-run-cycle"
+        return f"{self.coordinator.controller_unique_prefix}-run-cycle"
 
     @property
     def entity_category(self):
@@ -164,4 +177,4 @@ class IrrigationRunCycleButton(SmartWaterControllerButtonEntity):
 
     async def async_press(self) -> None:
         """Schedule the entire cycle without blocking the button action."""
-        self.hass.async_create_task(self.coordinator.irrigation_runner.run_manual_cycle())
+        self.coordinator.create_task(self.coordinator.irrigation_runner.run_manual_cycle())

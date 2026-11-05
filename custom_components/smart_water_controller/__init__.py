@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
@@ -97,10 +97,68 @@ class RuntimeData:
     """Class to hold your data."""
 
     coordinator: SmartWaterControllerCoordinator
-    cancel_update_listener: Callable
+    cancel_update_listener: Callable | None = None
+    services: list[str] = field(default_factory=list)
+    aliases: set[str] = field(default_factory=set)
+    legacy_prefix: str | None = None
+    service_handlers: dict[str, tuple[Callable, Any]] = field(default_factory=dict)
+    active: bool = False
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) -> bool:
+def _entry_runtimes(hass: HomeAssistant):
+    """Include pending runtimes for ownership, but not alias eligibility."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        runtime = getattr(entry, "runtime_data", None)
+        if isinstance(runtime, RuntimeData):
+            yield runtime
+
+
+def _remove_owned_alias(hass: HomeAssistant, name: str) -> None:
+    """Canonical registrations outrank compatibility aliases, never outsiders."""
+    for runtime in _entry_runtimes(hass):
+        if name in runtime.aliases:
+            hass.services.async_remove(DOMAIN, name)
+            runtime.aliases.remove(name)
+            runtime.services.remove(name)
+
+
+def _reconcile_aliases(hass: HomeAssistant) -> None:
+    """Expose aliases only for unambiguous, successfully loaded controllers.
+
+    This synchronous transaction never awaits between revocation and restoration.
+    Failed, pending and closed runtimes cannot suppress or acquire aliases.
+    """
+    runtimes = list(_entry_runtimes(hass))
+    candidates: dict[str, list[RuntimeData]] = {}
+    canonical = {name for runtime in runtimes
+                 for name in runtime.services if name not in runtime.aliases}
+    for runtime in runtimes:
+        if runtime.active and runtime.legacy_prefix:
+            candidates.setdefault(runtime.legacy_prefix, []).append(runtime)
+    desired: dict[str, RuntimeData] = {}
+    for prefix, owners in candidates.items():
+        if len(owners) != 1:
+            continue
+        owner = owners[0]
+        for base in owner.service_handlers:
+            name = f"{base}_{prefix}"
+            if name not in canonical:
+                desired[name] = owner
+    for runtime in runtimes:
+        for name in list(runtime.aliases):
+            if desired.get(name) is not runtime:
+                _remove_owned_alias(hass, name)
+    for name, runtime in desired.items():
+        if name in runtime.aliases or hass.services.has_service(DOMAIN, name):
+            continue
+        base = name.removesuffix(f"_{runtime.legacy_prefix}")
+        handler, schema = runtime.service_handlers[base]
+        hass.services.async_register(DOMAIN, name, handler, schema=schema)
+        runtime.services.append(name)
+        runtime.aliases.add(name)
+
+
+async def _async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) -> bool:
     """Set up Smart Water Controller Integration from a config entry."""
 
     # ----------------------------------------------------------------------------
@@ -116,7 +174,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) ->
     # if it fails.
     # ----------------------------------------------------------------------------
     # Restore durable shutdown intent before any refresh can save defaults.
-    await coordinator.init_task
+    config_entry.runtime_data = RuntimeData(coordinator)
+    await coordinator.async_init()
     await coordinator.async_config_entry_first_refresh()
 
     # ----------------------------------------------------------------------------
@@ -135,15 +194,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) ->
     # on the integration.
     # If you do not want any config flow options, no need to have listener.
     # ----------------------------------------------------------------------------
-    cancel_update_listener = config_entry.async_on_unload(
-        config_entry.add_update_listener(_async_update_listener)
-    )
+    cancel_update_listener = config_entry.add_update_listener(_async_update_listener)
 
     # ----------------------------------------------------------------------------
     # Add the coordinator and update listener to your config entry to make
     # accessible throughout your integration
     # ----------------------------------------------------------------------------
-    config_entry.runtime_data = RuntimeData(coordinator, cancel_update_listener)
+    config_entry.runtime_data.cancel_update_listener = cancel_update_listener
 
     # ----------------------------------------------------------------------------
     # Ensure the Device Registry entry is created and linked to this config entry.
@@ -181,11 +238,15 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) ->
 
     service_name = f"set_irrigation_schedule_{coordinator.controller_service_prefix}"
 
+    _remove_owned_alias(hass, service_name)
+    if hass.services.has_service(DOMAIN, service_name):
+        raise ConfigEntryNotReady(f"Service already owned: {service_name}")
     if not hass.services.has_service(DOMAIN, service_name):
         _LOGGER.info(
             f"{coordinator.controller_service_prefix} - Registering set_irrigation_schedule_{coordinator.controller_service_prefix.lower().replace(':', '_')} service..."
         )
         hass.services.async_register(DOMAIN, service_name, handle_set_schedule)
+        config_entry.runtime_data.services.append(service_name)
         _LOGGER.info(f"{coordinator.controller_service_prefix} - Registered.")
 
     # ----------------------------------------------------------------------------
@@ -204,6 +265,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) ->
         f"clear_irrigation_schedule_{coordinator.controller_service_prefix}"
     )
 
+    _remove_owned_alias(hass, clear_service_name)
+    if hass.services.has_service(DOMAIN, clear_service_name):
+        raise ConfigEntryNotReady(f"Service already owned: {clear_service_name}")
     if not hass.services.has_service(DOMAIN, clear_service_name):
         _LOGGER.info(
             f"{coordinator.controller_service_prefix} - Registering {clear_service_name} service..."
@@ -214,7 +278,22 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) ->
             handle_clear_schedule,
             schema=CLEAR_SCHEDULE_SCHEMA,
         )
+        config_entry.runtime_data.services.append(clear_service_name)
         _LOGGER.info(f"{coordinator.controller_service_prefix} - Registered.")
+
+    # Reserve controller_* for stable canonical entry-specific services.
+    runtime = config_entry.runtime_data
+    runtime.service_handlers = {
+        "set_irrigation_schedule": (handle_set_schedule, None),
+        "clear_irrigation_schedule": (handle_clear_schedule, CLEAR_SCHEDULE_SCHEMA),
+    }
+    if not coordinator.controller_mac_address:
+        from .helpers.util import get_controller_service_prefix
+        prefix = get_controller_service_prefix(
+            controller_mac=None, controller_name=controller_name
+        )
+        if not prefix.startswith("controller_"):
+            runtime.legacy_prefix = prefix
 
     # Both services are registered under a per-controller name, which is why
     # they need their descriptions attached explicitly. Done once here rather
@@ -233,6 +312,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) ->
     # ----------------------------------------------------------------------------
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
+
+    runtime.active = True
+    _reconcile_aliases(hass)
 
     # Return true to denote a successful setup.
     return True
@@ -263,7 +345,7 @@ async def async_reconfigure_entry(hass: HomeAssistant, config_entry: ConfigEntry
     _LOGGER.debug("Reconfiguring integration: %s", config_entry.entry_id)
 
     # Get runtime data from the existing entry
-    runtime_data: RuntimeData = hass.data[DOMAIN][config_entry.entry_id]
+    runtime_data: RuntimeData = config_entry.runtime_data
 
     # Atualizar a configuração do Coordinator
     await runtime_data.coordinator.update_config(config_entry)
@@ -271,32 +353,39 @@ async def async_reconfigure_entry(hass: HomeAssistant, config_entry: ConfigEntry
     # Force coordinator refresh
     await runtime_data.coordinator.async_refresh()
 
+async def _async_release_entry(hass, config_entry):
+    runtime = config_entry.runtime_data
+    runtime.active = False
+    if runtime.cancel_update_listener is not None:
+        runtime.cancel_update_listener()
+        runtime.cancel_update_listener = None
+    for name in runtime.services:
+        hass.services.async_remove(DOMAIN, name)
+    runtime.services.clear()
+    runtime.aliases.clear()
+    try:
+        await runtime.coordinator.async_close()
+    finally:
+        hass.data.get(DOMAIN, {}).pop(config_entry.entry_id, None)
+        _reconcile_aliases(hass)
+
+
+async def async_setup_entry(hass: HomeAssistant, config_entry: MyConfigEntry) -> bool:
+    """Roll back entry-owned resources on failure, including cancellation."""
+    try:
+        return await _async_setup_entry(hass, config_entry)
+    except BaseException:
+        if getattr(config_entry, "runtime_data", None) is not None:
+            try:
+                await hass.config_entries.async_unload_platforms(config_entry, PLATFORMS)
+            finally:
+                await _async_release_entry(hass, config_entry)
+        raise
+
+
 async def async_unload_entry(hass: HomeAssistant, config_entry: MyConfigEntry) -> bool:
-    """Unload a config entry.
-
-    This is called when you remove your integration or shutdown HA.
-    If you have created any custom services, they need to be removed here too.
-    """
-    runtime_data = config_entry.runtime_data
-    coordinator = runtime_data.coordinator
-    coordinator.irrigation_scheduler.clear()
-    coordinator.station_switch_tracker.clear()
-    if not coordinator.init_task.done():
-        coordinator.init_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await coordinator.init_task
-    await coordinator.irrigation_runner.async_close()
-
-    # Unload services
-    #for service in hass.services.async_services_for_domain(DOMAIN):
-        #hass.services.async_remove(DOMAIN, service)
-
-    service_prefix = runtime_data.coordinator.controller_service_prefix
-
-    service_name = f"set_irrigation_schedule_{service_prefix}"
-    hass.services.async_remove(DOMAIN, service_name)
-
-    hass.services.async_remove(DOMAIN, f"clear_irrigation_schedule_{service_prefix}")
-
-    # Unload platforms and return result
-    return await hass.config_entries.async_unload_platforms(config_entry, PLATFORMS)
+    """Keep runtime usable when HA refuses to unload its platforms."""
+    if not await hass.config_entries.async_unload_platforms(config_entry, PLATFORMS):
+        return False
+    await _async_release_entry(hass, config_entry)
+    return True

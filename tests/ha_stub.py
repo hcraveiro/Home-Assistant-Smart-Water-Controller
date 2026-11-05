@@ -33,7 +33,10 @@ module('homeassistant.const', STATE_ON='on', STATE_OFF='off', CONF_SENSORS='sens
        CONF_NAME='name', CONF_SCAN_INTERVAL='scan_interval')
 module('homeassistant.exceptions', HomeAssistantError=RuntimeError)
 module('homeassistant.helpers', __path__=[])
-module('homeassistant.helpers.event', async_track_state_change_event=lambda *args: lambda: None)
+module('homeassistant.helpers.event',
+       async_track_state_change_event=lambda *args: lambda: None,
+       async_track_time_change=lambda *args, **kwargs: lambda: None,
+       async_track_point_in_utc_time=lambda *args, **kwargs: lambda: None)
 module('homeassistant.helpers.entity_registry', async_get=lambda hass: hass.registry)
 
 

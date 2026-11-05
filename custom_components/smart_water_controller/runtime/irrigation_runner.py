@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.util import dt as dt_util
 
-from ..const import SOLEM_CONTROL_METHODS
 from ..errors import APIConnectionError
 from ..helpers import planning
 from .active_irrigation import ActiveIrrigationState
+from .backend import ExecutionContract, resolve_execution_contract
 
 if TYPE_CHECKING:
     from ..coordinator import SmartWaterControllerCoordinator
@@ -35,9 +35,13 @@ class _Session:
     irrigation: ActiveIrrigationState
     deadline: float
     last_sample: float
-    controller_managed_duration: bool = False
+    contract: ExecutionContract
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     interrupted: bool = False
+
+    @property
+    def controller_managed_duration(self) -> bool:
+        return self.contract.controller_managed_duration
 
 
 class IrrigationRunner:
@@ -87,10 +91,10 @@ class IrrigationRunner:
         """Report final irrigation outcomes when supported by the coordinator."""
         notifier = getattr(self.coordinator, "irrigation_notifications", None)
         if notifier is not None:
-            if (reason is None and event in ("station_finished", "cycle_finished")
-                    and self.coordinator.irrigation_control_method in SOLEM_CONTROL_METHODS
-                    and self.coordinator.api.uses_native_watering_duration()):
-                reason = "Controller-managed duration elapsed; water flow not verified"
+            if reason is None and event == "cycle_finished":
+                # A cycle can contain different captured contracts. Do not infer
+                # its physical outcome from today's editable backend settings.
+                reason = "Watering sequence completed; water flow not verified"
             await notifier.report(event, station=station, source=source, reason=reason)
 
     async def _publish(self) -> None:
@@ -151,7 +155,7 @@ class IrrigationRunner:
                     # Never let an obsolete retry touch a replacement session.
                     if not self.coordinator.pending_stop_stations:
                         continue
-                    await self.coordinator.save_persistent_data()
+                    await self.coordinator.save_persistent_data(force=True)
                     await self._attempt_pending_stops_locked()
                     await self._publish()
         except asyncio.CancelledError:
@@ -164,16 +168,20 @@ class IrrigationRunner:
             if self.coordinator.pending_stop_stations and not self._closing:
                 self._ensure_retry()
 
-    async def _attempt_pending_stops_locked(self) -> bool:
+    async def _attempt_pending_stops_locked(self, contract: ExecutionContract | None = None) -> bool:
         """Discharge acknowledged stops; switches additionally require OFF state.
 
         Service acknowledgement is not evidence of physical water flow stopping.
         """
         if not self.coordinator.pending_stop_stations:
             return True
-        if not self.coordinator._is_switch_control_method():
+        is_switch = contract.is_switch if contract else self.coordinator._is_switch_control_method()
+        budget = contract.command_budget if contract else (
+            CONFIRM_TIMEOUT if is_switch else self._service_command_timeout()
+        )
+        if not is_switch:
             try:
-                async with asyncio.timeout(self._service_command_timeout()):
+                async with asyncio.timeout(budget):
                     await self.coordinator.api.stop_sprinkle()
             except Exception:
                 _LOGGER.exception("Controller stop failed; durable intent retained")
@@ -196,7 +204,7 @@ class IrrigationRunner:
                 continue
             self._unavailable_logged.discard(station)
             try:
-                async with asyncio.timeout(CONFIRM_TIMEOUT):
+                async with asyncio.timeout(budget):
                     await self.coordinator.api.turn_off_station_switch(station)
                     if not await self._confirm_switch(station, STATE_OFF):
                         raise APIConnectionError("Switch did not confirm OFF")
@@ -217,9 +225,15 @@ class IrrigationRunner:
         await self.coordinator.save_persistent_data()
         return not self.coordinator.pending_stop_stations
 
-    async def _stop_locked(self, stations: list[int], reason: str) -> bool:
+    async def _stop_locked(
+        self, stations: list[int], reason: str, contract: ExecutionContract | None = None,
+    ) -> bool:
         """Invalidate ownership before awaiting hardware or storage."""
+        if contract is None and self._session is not None:
+            contract = self._session.contract
         self._invalidate_session()
+        if contract is not None:
+            _LOGGER.debug("Stop acknowledgement scope: %s", contract.stop_scope)
         _LOGGER.info("%s - Stopping irrigation: %s", self.coordinator.controller_mac_address, reason)
         self.coordinator.pending_stop_stations = sorted(
             set(self.coordinator.pending_stop_stations) | set(stations)
@@ -227,8 +241,8 @@ class IrrigationRunner:
         # Register recovery before the first cancellable persistence await.
         # A cancelled caller must not remove ownership of an unresolved valve.
         self._ensure_retry()
-        await self.coordinator.save_persistent_data()
-        stopped = await self._attempt_pending_stops_locked()
+        await self.coordinator.save_persistent_data(force=True)
+        stopped = await self._attempt_pending_stops_locked(contract)
         await self._publish()
         return stopped
 
@@ -616,15 +630,13 @@ class IrrigationRunner:
         seconds = duration * 60 if run_seconds is None else min(duration * 60, run_seconds)
         if duration <= 0 or seconds <= 0 or station not in self._all_stations():
             raise ValueError("Station and duration must be valid positive values")
-        controller_managed_duration = (
-            self.coordinator.irrigation_control_method in SOLEM_CONTROL_METHODS
-            and self.coordinator.api.uses_native_watering_duration()
+        contract = resolve_execution_contract(
+            control_method=self.coordinator.irrigation_control_method,
+            is_switch=self.coordinator._is_switch_control_method(), api=self.coordinator.api,
+            duration_minutes=duration, requested_seconds=run_seconds,
+            switch_budget=CONFIRM_TIMEOUT, service_budget=self._service_command_timeout(),
         )
-        if controller_managed_duration:
-            # Solem accepts whole minutes and shuts itself off. Track the same
-            # duration sent to it, not the planner's fractional remaining seconds:
-            # otherwise we would mark it idle and start the next station too soon.
-            seconds = duration * 60
+        seconds = contract.effective_seconds
         async with self._lock:
             if self._closing or (expected_generation is not None and expected_generation != self._generation):
                 return False
@@ -641,10 +653,10 @@ class IrrigationRunner:
                     return False
             if self._session is not None or self.coordinator.current_irrigation is not None:
                 if not await self._stop_locked(self._all_stations(), "replacing previous session"):
-                    if not self.coordinator._is_switch_control_method():
+                    if not contract.is_switch:
                         await self._report("irrigation_failed", station, source, "Stop command failed while replacing previous session")
                     return False
-            if self.coordinator._is_switch_control_method():
+            if contract.is_switch:
                 # Other zones must be known too: a disconnected controller may
                 # still be watering and a Rain Bird OFF affects all its zones.
                 for station_id in self._all_stations():
@@ -676,9 +688,9 @@ class IrrigationRunner:
             self._starting_station = station
             self._start_interrupted = False
             try:
-                await self.coordinator.save_persistent_data()
-                if self.coordinator._is_switch_control_method():
-                    async with asyncio.timeout(CONFIRM_TIMEOUT):
+                await self.coordinator.save_persistent_data(force=True)
+                if contract.is_switch:
+                    async with asyncio.timeout(contract.command_budget):
                         await self.coordinator.api.turn_on_station_switch(station, duration)
                         if not await self._confirm_switch(station, STATE_ON) or self._start_interrupted:
                             raise APIConnectionError("Switch did not confirm ON")
@@ -697,7 +709,7 @@ class IrrigationRunner:
                     # first place.
                     if not self._controller_on_confirmed:
                         try:
-                            async with asyncio.timeout(self._service_command_timeout()):
+                            async with asyncio.timeout(contract.command_budget):
                                 await self.coordinator.api.turn_on()
                         except APIConnectionError as exc:
                             # Not fatal: the controller may well be on already.
@@ -710,15 +722,15 @@ class IrrigationRunner:
                         else:
                             self.coordinator.controller.state = "On"
                             self._controller_on_confirmed = True
-                    async with asyncio.timeout(self._service_command_timeout()):
+                    async with asyncio.timeout(contract.command_budget):
                         await self.coordinator.api.sprinkle_station(station, duration)
             except asyncio.CancelledError:
-                await self._stop_locked([station], "start task cancelled")
+                await self._stop_locked([station], "start task cancelled", contract)
                 raise
             except Exception as exc:
                 _LOGGER.error("%s - Station %s start failed: %s", self.coordinator.controller_mac_address, station, exc)
-                await self._stop_locked([station], "start was not confirmed")
-                if source == "manual" or not self.coordinator._is_switch_control_method():
+                await self._stop_locked([station], "start was not confirmed", contract)
+                if source == "manual" or not contract.is_switch:
                     await self._report("irrigation_failed", station, source, f"Start failed: {exc}")
                 return False
             finally:
@@ -729,7 +741,7 @@ class IrrigationRunner:
             irrigation.end_at = irrigation.start_at + timedelta(seconds=seconds)
             session = _Session(
                 irrigation, started + seconds, started,
-                controller_managed_duration=controller_managed_duration,
+                contract=contract,
             )
             self._session = session
             if source in ("automatic", "manual_cycle") and self._cycle_running:
@@ -770,7 +782,7 @@ class IrrigationRunner:
                     session.wake.clear()
                     if self._session is not session:
                         return False
-                    if self.coordinator._is_switch_control_method() and (self._switch_state(station) != STATE_ON or session.interrupted):
+                    if session.contract.is_switch and (self._switch_state(station) != STATE_ON or session.interrupted):
                         _LOGGER.warning("%s - Station %s unexpectedly interrupted: switch=%s, state=%s, latched_interruption=%s, source=%s, remaining_seconds=%.1f; aborting sequence.",
                                         self.coordinator.controller_mac_address, station,
                                         self.coordinator.station_switch_tracker.get_station_switch_entity_id(station),
@@ -802,12 +814,14 @@ class IrrigationRunner:
                             self.coordinator.stations[station - 1].state = "Stopped"
                             await self.coordinator.save_persistent_data()
                             await self._publish()
-                            await self._report("station_finished", station, session.irrigation.source)
+                            await self._report("station_finished", station, session.irrigation.source,
+                                               session.contract.completion_reason)
                             return True
                         stopped = await self._stop_locked([station], "session duration completed")
                         if stopped:
-                            await self._report("station_finished", station, session.irrigation.source)
-                        elif not self.coordinator._is_switch_control_method():
+                            await self._report("station_finished", station, session.irrigation.source,
+                                               session.contract.completion_reason)
+                        elif not session.contract.is_switch:
                             await self._report("irrigation_failed", station, session.irrigation.source, "Stop command failed at end of session")
                         elif session.irrigation.source == "manual":
                             await self._report("irrigation_failed", station, "manual", "Failed to confirm station shutdown")
@@ -823,7 +837,7 @@ class IrrigationRunner:
             async with self._lock:
                 if self._session is session:
                     await self._stop_locked([station], "session worker failed")
-            if session.irrigation.source == "manual" or not self.coordinator._is_switch_control_method():
+            if session.irrigation.source == "manual" or not session.contract.is_switch:
                 await self._report("irrigation_failed", station, session.irrigation.source, f"Irrigation session failed unexpectedly: {exc}")
             return False
 

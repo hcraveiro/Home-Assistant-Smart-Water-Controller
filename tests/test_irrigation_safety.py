@@ -135,7 +135,7 @@ class Coordinator:
         if station is None or self.current_irrigation is None or self.current_irrigation.station == station:
             self.current_irrigation = None
 
-    async def save_persistent_data(self):
+    async def save_persistent_data(self, *, force=False):
         self.saved.append(deepcopy((self.pending_stop_stations, self.active_irrigation)))
 
     async def async_update_all_sensors(self):
@@ -259,7 +259,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         task = await self.start(seconds=5)
         original_save = self.c.save_persistent_data
         entered = asyncio.Event()
-        async def blocked_save():
+        async def blocked_save(*, force=False):
             entered.set()
             await asyncio.Event().wait()
         self.c.save_persistent_data = blocked_save
@@ -278,7 +278,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         original_save = self.c.save_persistent_data
         entered = asyncio.Event()
         first = True
-        async def block_first_save():
+        async def block_first_save(*, force=False):
             nonlocal first
             if first:
                 first = False
@@ -791,7 +791,10 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                         with patch.object(self.runner, '_report', new_callable=AsyncMock) as report:
                             session.wake.set()
                             self.assertTrue(await task)
-                            report.assert_awaited_once_with('station_finished', 1, source)
+                            report.assert_awaited_once_with(
+                            'station_finished', 1, source,
+                            'Controller-managed duration elapsed; water flow not verified',
+                        )
                         stop.assert_not_called()
                     self.assertNotIn(('service_off',), self.c.api.commands)
                     self.assertIn(('service_on', 1, 2), self.c.api.commands)
@@ -1229,7 +1232,8 @@ class NotificationOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['reason'], 'Controller-managed duration elapsed; water flow not verified')
         self.assertNotIn(('service_off',), self.c.api.commands)
         await runner._report('cycle_finished', None, 'automatic')
-        self.assertEqual(self.c.last_irrigation_result['reason'], result['reason'])
+        self.assertEqual(self.c.last_irrigation_result['reason'],
+                         'Watering sequence completed; water flow not verified')
 
     async def test_selected_mobile_devices_receive_exact_fixed_messages(self):
         self.c.config_entry.options = {

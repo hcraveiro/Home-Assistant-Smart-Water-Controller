@@ -124,7 +124,7 @@ class StationSwitchTracker:
                         tracked_entity_id, old_value, new_value, active_session.irrigation.source,
                     )
                 runner.notify_switch_change(tracked_station_id, new_value)
-                self.hass.async_create_task(self.sync())
+                self.coordinator.create_task(self.sync())
 
             unsubscribe = async_track_state_change_event(
                 self.hass,

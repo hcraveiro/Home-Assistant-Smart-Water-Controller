@@ -19,6 +19,7 @@ from homeassistant.util.dt import as_local
 from ..const import PIRATE_WEATHER_URL
 from ..errors import APIConnectionError
 from .common import FORECAST_BLOCK_HOURS, fetch_json
+from .intervals import RainInterval, remaining_probability, remaining_rain
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class PirateWeatherProvider:
 
         self._cache_current: dict[str, Any] | None = None
         self._cache_forecast: list[dict[str, Any]] | None = None
+        self._forecast_intervals: list[RainInterval] = []
         self._last_current_fetch_time = None
         self._last_forecast_fetch_time = None
         self.last_forecast_date = dt_util.now().date()
@@ -68,6 +70,9 @@ class PirateWeatherProvider:
         """Restore caches persisted by the coordinator across restarts."""
         if forecast:
             self._cache_forecast = list(forecast)
+        # Display buckets cannot reconstruct hourly coverage after a restart.
+        self._forecast_intervals = []
+        self._last_forecast_fetch_time = None
 
         if current:
             self._cache_current = dict(current)
@@ -174,7 +179,7 @@ class PirateWeatherProvider:
         now = dt_util.now()
 
         if (
-            self._cache_forecast
+            self._cache_forecast is not None
             and self._last_forecast_fetch_time
             and self._last_forecast_fetch_time.date() == now.date()
             and now - self._last_forecast_fetch_time < timedelta(minutes=max(15, self.timeout))
@@ -182,29 +187,31 @@ class PirateWeatherProvider:
             _LOGGER.debug("Returning cached forecast data.")
             return self._cache_forecast
 
-        # Reset per-day similar to OWM behaviour (preserve 00:00 block if present)
-        temp_cache = self._cache_forecast.copy() if self._cache_forecast else []
-
-        if self.last_forecast_date != now.date():
-            _LOGGER.debug("Day changed, resetting PirateWeather forecast cache...")
-            self._cache_forecast = []
-            self.last_forecast_date = now.date()
-
+        # Build a replacement snapshot before publishing either cache.
         try:
             data = await self._get_shared_payload()
-            hourly = (data.get("hourly") or {}).get("data") or []
+            hourly = (data.get("hourly") or {}).get("data")
+            # An explicitly empty list is a valid provider no-forecast response;
+            # absent/null hourly data must not silently become dry weather.
+            if not isinstance(hourly, list):
+                raise ValueError("Missing PirateWeather hourly forecast data")
+            intervals = []
+            for item in hourly:
+                start = datetime.fromtimestamp(item["time"], tz=timezone.utc)
+                intervals.append(RainInterval(
+                    start, start + timedelta(hours=1),
+                    float(item.get("precipIntensity") or 0.0),
+                    float(item.get("precipProbability") or 0.0),
+                ))
         except Exception as exc:  # pylint: disable=broad-except
             if "PirateWeather HTTP 429 cooldown active" in str(exc):
                 _LOGGER.debug("PirateWeather forecast skipped during rate-limit cooldown.")
             else:
                 _LOGGER.error("Error processing PirateWeather forecast: %s", exc)
-            if not self._cache_forecast:
-                self._cache_forecast = temp_cache
             raise APIConnectionError(
                 f"Error processing PirateWeather forecast: {exc}"
             ) from exc
 
-        today = now.date()
         # We build blocks for 00,03,...,21 for *today*.
         block_starts = FORECAST_BLOCK_HOURS
 
@@ -217,26 +224,11 @@ class PirateWeatherProvider:
             mm_sum = 0.0
             pop_max = 0.0
 
-            for h in hourly:
-                if "time" not in h:
-                    continue
-
-                utc_dt = datetime.fromtimestamp(h["time"], tz=timezone.utc)
-                local_dt = as_local(utc_dt)
-
-                if local_dt.date() != today:
-                    continue
-
-                if not (block_start_local <= local_dt < block_end_local):
-                    continue
-
-                # precipIntensity in mm/h (SI). For 1 hour, approximate mm = intensity * 1h.
-                intensity = float(h.get("precipIntensity") or 0.0)
-                mm_sum += intensity
-
-                pop = float(h.get("precipProbability") or 0.0)
-                if pop > pop_max:
-                    pop_max = pop
+            for interval in intervals:
+                fraction = interval.overlap_fraction(block_start_local, block_end_local)
+                mm_sum += interval.millimetres * fraction
+                if fraction > 0:
+                    pop_max = max(pop_max, interval.probability)
 
             dt_txt = block_start_local.strftime("%Y-%m-%d %H:%M:%S")
             blocks.append(
@@ -270,46 +262,17 @@ class PirateWeatherProvider:
         filtered.sort(key=lambda x: x["dt_txt"])
 
         self._cache_forecast = filtered
+        self._forecast_intervals = intervals
         self._last_forecast_fetch_time = now
+        self.last_forecast_date = now.date()
         return self._cache_forecast
 
     async def will_it_rain(self) -> dict:
         forecast = await self.get_forecast()
-        will_rain = any((item.get("pop") or 0.0) > 0.50 for item in forecast)
+        will_rain = remaining_probability(self._forecast_intervals, dt_util.now())
         return {"will_rain": will_rain, "forecast": forecast}
 
     async def get_total_rain_forecast_for_today(self) -> float:
-        """Sum remaining rain (mm) for today, prorating the current 3h block."""
-        forecast = await self.get_forecast()
-
-        now = dt_util.now()
-        current_time = now.hour * 60 + now.minute
-        today_str = now.strftime("%Y-%m-%d")
-        total_rain_mm = 0.0
-
-        for item in forecast:
-            dt_txt = item.get("dt_txt")
-            if not dt_txt:
-                continue
-
-            forecast_date, forecast_hour_minute = dt_txt.split(" ")
-            forecast_hour = int(forecast_hour_minute.split(":")[0])
-
-            if forecast_date != today_str:
-                continue
-
-            rain_mm = float(((item.get("rain") or {}).get("3h") or 0.0))
-
-            forecast_start_minute = forecast_hour * 60
-            forecast_end_minute = forecast_start_minute + 180
-
-            if forecast_end_minute <= current_time:
-                continue
-
-            if forecast_start_minute <= current_time < forecast_end_minute:
-                remaining_minutes = forecast_end_minute - current_time
-                rain_mm = (remaining_minutes / 180) * rain_mm
-
-            total_rain_mm += rain_mm
-
-        return total_rain_mm
+        """Integrate hourly intervals directly, never prorate display buckets."""
+        await self.get_forecast()
+        return remaining_rain(self._forecast_intervals, dt_util.now())

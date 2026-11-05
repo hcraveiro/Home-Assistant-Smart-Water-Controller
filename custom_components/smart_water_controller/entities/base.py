@@ -52,7 +52,7 @@ class SmartWaterControllerBaseEntity(CoordinatorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        self.device = self.coordinator.get_device(self.device_id)
+        self.device = self.coordinator.get_device(self.device_id) or self.device
         _LOGGER.debug(
             "Updating device: %s, %s",
             self.device_id,
@@ -109,24 +109,24 @@ class SmartWaterControllerBaseEntity(CoordinatorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information.
-    
+
         Use a single device per config entry. If entities expose different identifiers,
         Home Assistant will create duplicate devices (one empty, another with entities).
         """
         entry = self.coordinator.config_entry
-    
+
         controller_mac = normalize_mac_address(
             str(entry.data.get(CONTROLLER_MAC_ADDRESS, "") or entry.unique_id or "").strip()
         )
         connections = {(dr.CONNECTION_NETWORK_MAC, controller_mac)} if controller_mac else set()
-    
+
         controller_name = str(entry.data.get(CONF_NAME, "") or entry.title or "Smart Water Controller").strip()
         model = (
             controller_mac.split("-")[0]
             if controller_mac and "-" in controller_mac
             else (controller_mac or "Controller")
         )
-    
+
         return DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=controller_name,
@@ -145,7 +145,7 @@ class SmartWaterControllerBaseEntity(CoordinatorEntity):
     @property
     def name(self) -> str:
         """Return the name of the sensor."""
-        return self.device["device_name"]
+        return self.device.get("device_name", "Controller") if self.device else "Controller"
 
     @property
     def unique_id(self) -> str:

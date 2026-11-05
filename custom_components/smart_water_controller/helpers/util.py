@@ -86,11 +86,14 @@ def get_controller_unique_id(*, controller_mac: str | None, controller_name: str
     return slugify(name)
 
 
-def get_controller_service_prefix(*, controller_mac: str | None, controller_name: str | None) -> str:
+def get_controller_service_prefix(*, controller_mac: str | None, controller_name: str | None, entry_id: str | None = None) -> str:
     """Return the service prefix used to build service names."""
     mac = normalize_mac_address(controller_mac or "")
     if mac:
         return mac.replace(":", "_")
+
+    if entry_id:
+        return f"controller_{slugify(entry_id)}"
 
     name = (controller_name or "").strip() or "controller"
     return slugify(name)
