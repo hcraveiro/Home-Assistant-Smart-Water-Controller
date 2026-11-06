@@ -493,6 +493,27 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.get_state(1), 'off')
         self.assertEqual(self.c.pending_stop_stations, [])
 
+    async def test_explicit_stop_unavailable_retains_intent_until_reconnect_on(self):
+        task = await self.start(seconds=300)
+        await self.wait_for(lambda: self.c.get_state(1) == 'on')
+        self.c.set_state(1, 'unavailable')
+        with self.assertLogs(runtime._LOGGER, 'ERROR'):
+            self.assertFalse(await self.runner.stop_station(1))
+        self.assertFalse(await task)
+        self.assertEqual(self.c.pending_stop_stations, [1])
+        self.assertTrue(any(pending == [1] for pending, _ in self.c.saved))
+        self.assertIsNotNone(self.c.active_irrigation)
+        with self.assertLogs(runtime._LOGGER, 'ERROR'):
+            self.assertFalse(await self.runner.start_irrigation(2, 5))
+        before = len(self.c.api.commands)
+        self.c.set_state(1, 'on')
+        await self.runner.handle_switch_states()
+        self.assertIn(('off', 1), self.c.api.commands[before:])
+        self.assertEqual(self.c.get_state(1), 'off')
+        self.assertEqual(self.c.pending_stop_stations, [])
+        self.assertIsNone(self.c.active_irrigation)
+        self.assertIsNone(self.runner._session)
+
     async def test_loss_stops_accounting_and_reconnect_forces_off(self):
         task = await self.start(seconds=.2)
         await asyncio.sleep(.015)
