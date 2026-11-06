@@ -28,6 +28,11 @@ RETRY_INTERVAL = 5.0
 SAMPLE_INTERVAL = 1.0
 
 
+def _error_text(exc: BaseException) -> str:
+    """Never persist or log an empty failure reason."""
+    return str(exc).strip() or type(exc).__name__
+
+
 @dataclass(eq=False)
 class _Session:
     """One operation owns its cancellation, deadline and cleanup."""
@@ -204,14 +209,22 @@ class IrrigationRunner:
                 continue
             self._unavailable_logged.discard(station)
             try:
-                async with asyncio.timeout(budget):
-                    await self.coordinator.api.turn_off_station_switch(station)
-                    if not await self._confirm_switch(station, STATE_OFF):
-                        raise APIConnectionError("Switch did not confirm OFF")
+                # Bound the command and the state confirmation separately: a
+                # shared deadline lets the command timeout mask the more
+                # meaningful "did not confirm OFF" error.
+                try:
+                    async with asyncio.timeout(budget):
+                        await self.coordinator.api.turn_off_station_switch(station)
+                except TimeoutError as exc:
+                    raise APIConnectionError(
+                        f"Switch OFF command did not return within {budget:g}s"
+                    ) from exc
+                if not await self._confirm_switch(station, STATE_OFF):
+                    raise APIConnectionError("Switch did not confirm OFF")
             except Exception as exc:
                 _LOGGER.error("%s - Stop not confirmed for station %s (%s): %s; will retry.",
                               self.coordinator.controller_mac_address, station,
-                              self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), exc)
+                              self.coordinator.station_switch_tracker.get_station_switch_entity_id(station), _error_text(exc))
                 continue
             self.coordinator.pending_stop_stations.remove(station)
             # Persist each confirmed stop without losing any unresolved stations.
@@ -690,10 +703,19 @@ class IrrigationRunner:
             try:
                 await self.coordinator.save_persistent_data(force=True)
                 if contract.is_switch:
-                    async with asyncio.timeout(contract.command_budget):
-                        await self.coordinator.api.turn_on_station_switch(station, duration)
-                        if not await self._confirm_switch(station, STATE_ON) or self._start_interrupted:
-                            raise APIConnectionError("Switch did not confirm ON")
+                    # The command and its state confirmation have independent
+                    # budgets. Sharing one deadline made the outer timeout fire
+                    # first and report an empty reason instead of
+                    # "Switch did not confirm ON".
+                    try:
+                        async with asyncio.timeout(contract.command_budget):
+                            await self.coordinator.api.turn_on_station_switch(station, duration)
+                    except TimeoutError as exc:
+                        raise APIConnectionError(
+                            f"Switch ON command did not return within {contract.command_budget:g}s"
+                        ) from exc
+                    if not await self._confirm_switch(station, STATE_ON) or self._start_interrupted:
+                        raise APIConnectionError("Switch did not confirm ON")
                 else:
                     # A Solem controller only waters when its own master switch
                     # is on, but it acknowledges a sprinkle over BLE either way:
@@ -728,10 +750,10 @@ class IrrigationRunner:
                 await self._stop_locked([station], "start task cancelled", contract)
                 raise
             except Exception as exc:
-                _LOGGER.error("%s - Station %s start failed: %s", self.coordinator.controller_mac_address, station, exc)
+                _LOGGER.error("%s - Station %s start failed: %s", self.coordinator.controller_mac_address, station, _error_text(exc))
                 await self._stop_locked([station], "start was not confirmed", contract)
                 if source == "manual" or not contract.is_switch:
-                    await self._report("irrigation_failed", station, source, f"Start failed: {exc}")
+                    await self._report("irrigation_failed", station, source, f"Start failed: {_error_text(exc)}")
                 return False
             finally:
                 self._starting_station = None
@@ -838,7 +860,7 @@ class IrrigationRunner:
                 if self._session is session:
                     await self._stop_locked([station], "session worker failed")
             if session.irrigation.source == "manual" or not session.contract.is_switch:
-                await self._report("irrigation_failed", station, session.irrigation.source, f"Irrigation session failed unexpectedly: {exc}")
+                await self._report("irrigation_failed", station, session.irrigation.source, f"Irrigation session failed unexpectedly: {_error_text(exc)}")
             return False
 
     async def stop_station(self, station: int) -> bool:

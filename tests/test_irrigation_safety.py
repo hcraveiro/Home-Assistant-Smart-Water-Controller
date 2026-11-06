@@ -469,6 +469,18 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.c.current_irrigation)
         self.assertEqual(self.c.total_water_consumption, 0)
 
+    async def test_off_acknowledgement_timeout_is_not_masked_by_command_budget(self):
+        task = await self.start(seconds=.2)
+        self.c.api.confirm_off = False
+        with self.assertLogs(runtime._LOGGER, 'ERROR') as logs:
+            self.assertFalse(await self.runner.stop_irrigation())
+        self.assertFalse(await task)
+        self.assertIn("Switch did not confirm OFF", "\n".join(logs.output))
+        self.assertEqual(self.c.pending_stop_stations, [1])
+        self.c.api.confirm_off = True
+        await self.runner.handle_switch_states()
+        self.assertEqual(self.c.pending_stop_stations, [])
+
     async def test_start_timeout_persists_stop_and_recovery_sends_off(self):
         self.c.api.fail_on = True
         with self.assertLogs(runtime._LOGGER, 'ERROR'):
@@ -1295,6 +1307,34 @@ class NotificationOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [call[2]["message"] for call in self.c.hass.services.calls],
             ["Sprinkling failed on Zone 1."],
+        )
+
+    async def test_switch_on_confirmation_timeout_records_non_empty_reason(self):
+        self.c.switch = True
+        self.c.irrigation_control_method = "switch"
+        self.c.api.confirm_on = False
+        with patch.object(runtime, "CONFIRM_TIMEOUT", .04):
+            with self.assertLogs(runtime._LOGGER, "ERROR"):
+                self.assertFalse(
+                    await self.c.irrigation_runner.start_irrigation(1, 5, source="manual")
+                )
+        self.assertEqual(
+            self.c.last_irrigation_failure["reason"],
+            "Start failed: Switch did not confirm ON",
+        )
+
+    async def test_switch_on_command_timeout_records_non_empty_reason(self):
+        self.c.switch = True
+        self.c.irrigation_control_method = "switch"
+        self.c.api.on_gate = asyncio.Event()  # Never released: ON command hangs.
+        with patch.object(runtime, "CONFIRM_TIMEOUT", .04):
+            with self.assertLogs(runtime._LOGGER, "ERROR"):
+                self.assertFalse(
+                    await self.c.irrigation_runner.start_irrigation(1, 5, source="manual")
+                )
+        self.assertEqual(
+            self.c.last_irrigation_failure["reason"],
+            "Start failed: Switch ON command did not return within 0.04s",
         )
 
     async def test_manual_station_stop_records_cancelled_without_success_or_failure(self):
