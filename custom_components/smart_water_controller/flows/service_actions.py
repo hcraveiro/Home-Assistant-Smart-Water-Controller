@@ -212,3 +212,16 @@ def build_action_description(action: str, service_call: str, *, requires_mac: bo
         "Empty values will be provided by the coordinator at runtime."
         + ("\nThis Solem profile requires a MAC address in at least one enabled action." if requires_mac else "")
     )
+
+
+def solem_params_match_identity(params: list[dict[str, Any]], identity: str) -> bool:
+    """Allow inherited MACs, but never retarget a fixed Solem destination."""
+    from ..helpers.util import normalize_mac_address
+
+    return all(
+        not str(param.get(SERVICE_PARAM_VALUE) or "").strip()
+        or normalize_mac_address(str(param[SERVICE_PARAM_VALUE])) == normalize_mac_address(identity)
+        for param in params
+        if param.get(SERVICE_PARAM_TYPE) == SERVICE_PARAM_TYPE_MAC
+        or param.get(SERVICE_PARAM_NAME) == "device_mac"
+    )

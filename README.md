@@ -998,8 +998,10 @@ station status sensor exposes `stop_pending`.
 Water consumption is an estimate from configured flow and elapsed, confirmed ON
 time, not a physical meter. No water is added while the switch is unavailable or
 a stop is pending. Time when the physical valve cannot be observed is unknown.
-Automatic runs use a precise session deadline for the planned amount, even when
-the hardware requires a duration rounded up to whole minutes.
+Switch and locally timed service runs use a precise session deadline for the
+planned amount. Native Solem timed commands use whole-minute durations and rely
+on the controller timer at natural expiry; elapsed time and service acknowledgement
+are not physical water-flow confirmation.
 
 The daily target is the full active day's schedule. Saving that schedule keeps
 missed or interrupted watering in the remaining amount. For example, two daily
@@ -1014,13 +1016,57 @@ shared `irrigation_None` storage is copied only when exactly one generic control
 exists and its new storage is absent. The original copy is preserved. With multiple
 generic controllers, that legacy shared file cannot be safely attributed automatically.
 
+### Generic controller service migration
+
+Generic controllers now expose stable, entry-specific schedule actions:
+`smart_water_controller.set_irrigation_schedule_controller_<entry_id>` and
+`smart_water_controller.clear_irrigation_schedule_controller_<entry_id>`.
+The schedule sensor's `service_prefix` / `controller_service_prefix` attributes
+provide the canonical suffix; cards should use that value rather than derive it
+from the controller name. Existing MAC-based service names are unchanged.
+
+Name-based generic actions are compatibility aliases only. Use the canonical
+entry-specific actions in dashboards, scripts and automations, especially when
+controllers share a name. The `controller_` prefix is reserved for canonical
+services and is not available for name-based aliases. This code update does not
+rewrite existing dashboard or automation references automatically.
+
+### Daylight-saving schedule policy
+
+Slots are local wall-clock times. A time that does not exist during the spring
+clock change is excluded from both execution and that day's watering target;
+its amount is not transferred to a later slot. During the autumn clock change,
+a repeated time is counted and scheduled once, at its first occurrence. Valid
+slots missed for other reasons still contribute to the daily remaining target.
+
+### Weather forecast attributes
+
+The `forecast` attribute of “Will it rain today” exposes only compact blocks
+that overlap the remaining local day, including the block ending at midnight.
+It retains `dt` (OWM), `dt_txt`, `pop` and `rain["3h"]`, and adds explicit UTC
+`start` / `end` timestamps. These describe the original provider block: OWM's
+stamp is its end, while PirateWeather's display stamp is its start. Display
+amounts are not re-prorated. Full temperature/wind/pressure payloads and future
+days are no longer exposed through this attribute. Custom consumers of those
+removed fields must use a dedicated weather entity instead.
+
+Complete provider caches and normalized rain-accounting intervals remain
+internal and unchanged. Presentation is bounded to keep Recorder attributes
+below Home Assistant's 16 KB limit; it does not change rain or watering decisions.
+
 ### Regression tests
 
 Run `python -m unittest discover -s tests -v` and
 `python -m compileall -q custom_components`. The tests execute the production
 runtime, planning, API and persistence modules with minimal Home Assistant
 boundary fakes; they require no installed HA instance and never operate valves.
-CI runs them on Python 3.12 and 3.13. Normal sequential watering was also verified
+For the separate real-Home-Assistant boundary suite, create an isolated Python
+3.14.2+ environment, install `tests_ha/requirements.txt`, and run
+`python -m pytest -q tests_ha --import-mode=importlib`. These tests use real HA
+registries and storage with controlled platform setup, without operating devices.
+Do not combine them with the stub-based suite in a single test process.
+
+Normal sequential watering was also verified
 on a Rain Bird controller across evening and morning cycles: each zone completed,
 the switches returned to OFF, and applied/remaining amounts matched the daily target.
 The disconnect/reconnect and failed-command scenarios are covered by automated tests;

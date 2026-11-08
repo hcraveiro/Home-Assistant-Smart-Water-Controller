@@ -119,6 +119,28 @@ def describe_schedule(
     return lines
 
 
+def get_watering_slots_for_day(
+    day: date,
+    month_config: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    log_prefix: str = "",
+) -> list[tuple[str, datetime]]:
+    """Return date-specific occurrences, skipping gaps and using fold zero once.
+
+    Past valid occurrences remain part of the daily target and catch-up debt.
+    Nonexistent wall times never contribute to either.
+    """
+    now = now or dt_util.now()
+    slots: list[tuple[str, datetime]] = []
+    for hour in get_valid_watering_hours(month_config, log_prefix=log_prefix):
+        watering_datetime = datetime.combine(day, parse_time_string(hour), tzinfo=now.tzinfo)
+        round_trip = datetime.fromtimestamp(watering_datetime.timestamp(), tz=now.tzinfo)
+        if round_trip.replace(tzinfo=None) == watering_datetime.replace(tzinfo=None):
+            slots.append((hour, watering_datetime))
+    return slots
+
+
 def get_future_watering_slots_for_day(
     day: date,
     month_config: dict[str, Any],
@@ -130,10 +152,12 @@ def get_future_watering_slots_for_day(
     now = now or dt_util.now()
     future_slots: list[tuple[str, datetime]] = []
 
-    for hour in get_valid_watering_hours(month_config, log_prefix=log_prefix):
-        watering_datetime = dt_util.as_local(datetime.combine(day, parse_time_string(hour)))
-
-        if watering_datetime > now:
+    for hour, watering_datetime in get_watering_slots_for_day(
+        day, month_config, now=now, log_prefix=log_prefix
+    ):
+        # Comparing two datetimes sharing ZoneInfo uses wall time; timestamps
+        # preserve elapsed-time ordering across DST/fold boundaries.
+        if watering_datetime.timestamp() > now.timestamp():
             future_slots.append((hour, watering_datetime))
 
     return future_slots
@@ -198,7 +222,11 @@ def calculate_sprinkle_target_amounts(
         _LOGGER.debug("%sNo month configuration. Target amounts: %s", log_prefix, target)
         return target
 
-    watering_hours = get_valid_watering_hours(month_config, log_prefix=log_prefix)
+    watering_hours = [
+        hour for hour, _ in get_watering_slots_for_day(
+            today, month_config, now=now, log_prefix=log_prefix
+        )
+    ]
 
     if only_future_slots:
         future_slots = get_future_watering_slots_for_day(
@@ -308,14 +336,11 @@ def get_current_slot_index(
     reference_hm = (reference_time.hour, reference_time.minute)
     current_slot_index = 0
 
-    for hour in watering_hours:
-        try:
-            watering_time = parse_time_string(hour)
-
-            if (watering_time.hour, watering_time.minute) <= reference_hm:
-                current_slot_index += 1
-        except ValueError:
-            _LOGGER.error("%sInvalid hour format: %s", log_prefix, hour)
+    for _hour, occurrence in get_watering_slots_for_day(
+        now.date(), {"hours": watering_hours}, now=now, log_prefix=log_prefix
+    ):
+        if (occurrence.hour, occurrence.minute) <= reference_hm:
+            current_slot_index += 1
 
     return max(1, current_slot_index)
 

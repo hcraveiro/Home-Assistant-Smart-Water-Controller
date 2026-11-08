@@ -9,6 +9,9 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
+
+from ..weather_providers.public_forecast import compact_today_forecast
 
 from .. import MyConfigEntry
 from .base import SmartWaterControllerBaseEntity
@@ -88,7 +91,9 @@ class WillRainToday(BooleanBinarySensor):
         """Return the extra state attributes."""
         # Add any additional attributes you want on your sensor.
         attrs = {}
-        attrs["forecast"] = self.coordinator.will_it_rain_today_forecast
+        attrs["forecast"] = compact_today_forecast(
+            self.coordinator.will_it_rain_today_forecast, dt_util.now()
+        )
         return attrs
 
 class HasRainedToday(BooleanBinarySensor):

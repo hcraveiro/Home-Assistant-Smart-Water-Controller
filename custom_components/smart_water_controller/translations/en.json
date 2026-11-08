@@ -12,7 +12,8 @@
       "invalid_settings": "Invalid settings",
       "invalid_service": "Invalid service format. Use domain.service",
       "invalid_mac": "Invalid MAC address. Use AA:BB:CC:DD:EE:FF",
-      "mac_required": "Solem profiles require a MAC address in at least one enabled action parameter of type MAC address.",
+      "mac_required": "Solem profiles require a controller MAC address. After setup, empty action MAC parameters inherit that identity.",
+      "mac_mismatch": "Action MAC addresses must match this controller. Replacing hardware requires a separate controller entry.",
       "unknown": "Unexpected error",
       "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
       "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
@@ -279,7 +280,8 @@
       "bl_nr_single_station": "The Solem BL-NR is a single-station controller. Set the number of stations to 1.",
       "invalid_parameter": "Each parameter needs a name, a valid value source and a text value.",
       "duplicate_parameter": "Parameter names must be unique within an action.",
-      "mac_required": "Solem profiles require a MAC address in at least one enabled action parameter of type MAC address.",
+      "mac_required": "Solem profiles require a controller MAC address. After setup, empty action MAC parameters inherit that identity.",
+      "mac_mismatch": "Action MAC addresses must match this controller. Replacing hardware requires a separate controller entry.",
       "target_required": "Select at least one mobile device to enable notifications.",
       "invalid_targets": "Select only registered mobile app notification services."
     }

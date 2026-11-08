@@ -1,5 +1,7 @@
 """Focused regression tests for persistence and schedule calculations."""
 
+import asyncio
+from copy import deepcopy
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 import unittest
@@ -11,9 +13,11 @@ from custom_components.smart_water_controller.runtime.storage import IrrigationS
 
 class PersistenceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.clock = 0.0
         self.storage = IrrigationStorage(
             None, "coverage-test", num_stations=2,
             station_name_resolver=lambda station: f"Zone {station}",
+            monotonic_clock=lambda: self.clock,
         )
 
     async def test_unchanged_state_is_not_rewritten(self):
@@ -22,6 +26,91 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.async_save(state)
         await self.storage.async_save(state)
         self.assertEqual(self.storage._store.async_save.await_count, 1)
+
+    async def test_swallowed_failure_retries_unchanged_state_after_bounded_delay(self):
+        state = self.storage._default_state()
+        persisted = []
+        attempts = 0
+
+        async def save(payload):
+            nonlocal attempts
+            attempts += 1
+            # Model HA catching WriteError internally on the first attempt.
+            if attempts > 1:
+                persisted.append(deepcopy(payload))
+
+        self.storage._store.async_save = AsyncMock(side_effect=save)
+        await self.storage.async_save(state)
+        for minute in range(1, 60):
+            self.clock = minute * 60
+            await self.storage.async_save(state)
+        self.assertEqual(attempts, 1)
+        self.assertEqual(persisted, [])
+        self.clock = 3600
+        await self.storage.async_save(state)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(persisted, [self.storage._state_to_storage(state)])
+        self.clock += 60
+        await self.storage.async_save(state)
+        self.assertEqual(attempts, 2)
+
+    async def test_force_bypasses_cache_and_failure_does_not_suppress_retry(self):
+        state = self.storage._default_state()
+        self.storage._store.async_save = AsyncMock(
+            side_effect=[None, OSError("disk unavailable"), None]
+        )
+        await self.storage.async_save(state)
+        with self.assertRaises(OSError):
+            await self.storage.async_save(state, force=True)
+        await self.storage.async_save(state)
+        self.assertEqual(self.storage._store.async_save.await_count, 3)
+
+    async def test_concurrent_writes_are_serialized_and_nested_snapshots_detached(self):
+        state = self.storage._default_state()
+        state.schedule = [{"nested": [1]}]
+        state.station_irrigation_results = {"1": {"values": [1]}}
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        payloads = []
+
+        async def save(payload):
+            payloads.append(payload)
+            if len(payloads) == 1:
+                entered.set()
+                await release.wait()
+
+        self.storage._store.async_save = AsyncMock(side_effect=save)
+        first = asyncio.create_task(self.storage.async_save(state))
+        await entered.wait()
+        state.schedule[0]["nested"].append(2)
+        state.station_irrigation_results["1"]["values"].append(2)
+        second = asyncio.create_task(self.storage.async_save(state))
+        # Let the second call snapshot and wait for the writer lock.
+        await asyncio.sleep(0)
+        state.schedule[0]["nested"].append(3)
+        state.station_irrigation_results["1"]["values"].append(3)
+        self.assertEqual(len(payloads), 1)
+        release.set()
+        await asyncio.gather(first, second)
+        self.assertEqual(payloads[0]["schedule"], [{"nested": [1]}])
+        self.assertEqual(payloads[1]["schedule"], [{"nested": [1, 2]}])
+        self.assertEqual(payloads[0]["station_irrigation_results"]["1"]["values"], [1])
+        self.assertEqual(payloads[1]["station_irrigation_results"]["1"]["values"], [1, 2])
+        await self.storage.async_save(state)
+        self.assertEqual(len(payloads), 3)
+
+    def test_both_stores_use_atomic_replacement(self):
+        with patch(
+            "custom_components.smart_water_controller.runtime.storage.Store"
+        ) as store:
+            IrrigationStorage(
+                None, "primary", num_stations=2,
+                station_name_resolver=lambda station: None,
+                legacy_storage_key="legacy",
+            )
+        self.assertEqual(store.call_count, 2)
+        for call in store.call_args_list:
+            self.assertTrue(call.kwargs["atomic_writes"])
 
     async def test_mutated_live_list_is_persisted(self):
         state = self.storage._default_state()

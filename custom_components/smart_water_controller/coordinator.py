@@ -27,7 +27,7 @@ from homeassistant.const import (
 )
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .helpers.util import ensure_datetime, ensure_aware, get_controller_service_prefix
 from .models.irrigation import IrrigationController, IrrigationStation
@@ -108,6 +108,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         return get_controller_service_prefix(
             controller_mac=self.controller_mac_address,
             controller_name=raw_name,
+            entry_id=self.config_entry.entry_id,
         )
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
@@ -149,6 +150,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=f"{DOMAIN} ({config_entry.unique_id})",
+            config_entry=config_entry,
             update_method=self.async_update_data,
             update_interval=timedelta(seconds=self.poll_interval),
         )
@@ -221,6 +223,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.current_irrigation: ActiveIrrigationState | None = None
     
         self._storage_lock = asyncio.Lock()
+        self._daily_reset_lock = asyncio.Lock()
         generic_entries = [entry for entry in hass.config_entries.async_entries(DOMAIN) if not entry.unique_id]
         self.storage = IrrigationStorage(
             hass,
@@ -263,7 +266,9 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     
         self.weather_runtime.configure()
     
-        self.init_task = hass.async_create_task(self.async_init())
+        self._tasks: set[asyncio.Task] = set()
+        self._closed = False
+        self.data = []
     
         _LOGGER.info(f"{self.controller_mac_address} - Coordinator initialization finished!")
 
@@ -403,10 +408,10 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         self.last_irrigation_failure = state.last_irrigation_failure
         self.station_irrigation_results = state.station_irrigation_results
         
-    async def save_persistent_data(self):
+    async def save_persistent_data(self, *, force=False):
         """Save persistent data to storage."""
         async with self._storage_lock:
-            await self.storage.async_save(self._build_persistent_state())
+            await self.storage.async_save(self._build_persistent_state(), force=force)
 
     def _build_persistent_state(self) -> PersistentIrrigationState:
         """Build persistent state from the coordinator."""
@@ -613,6 +618,23 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         )
 
 
+    async def async_ensure_current_day(self):
+        """Serialize midnight reset across polling and scheduled dispatch."""
+        async with self._daily_reset_lock:
+            now = dt_util.now()
+            last_reset = self.last_reset
+            if isinstance(last_reset, str):
+                try:
+                    last_reset = datetime.fromisoformat(last_reset)
+                except ValueError:
+                    last_reset = None
+            if isinstance(last_reset, datetime):
+                if last_reset.tzinfo is not None:
+                    last_reset = dt_util.as_local(last_reset)
+                if last_reset.date() == now.date():
+                    return
+            await self.reset_rain_sprinkle_indicators()
+
     async def reset_rain_sprinkle_indicators(self, *_):
         """Reset rain and sprinkle indicators."""
         self.has_rained_today = False
@@ -702,22 +724,8 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
     
         now = dt_util.now()
     
-        if now.time() > datetime.strptime("00:05:00", "%H:%M:%S").time():
-            try:
-                self.last_reset = ensure_datetime(self.last_reset)
-    
-                if self.last_reset.date() != now.date():
-                    _LOGGER.info(
-                        f"{self.controller_mac_address} - Last reset was on {self.last_reset.date()}, "
-                        "performing daily reset."
-                    )
-                    await self.reset_rain_sprinkle_indicators()
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.warning(
-                    f"{self.controller_mac_address} - Could not determine last_reset date. "
-                    f"Skipping reset. Error: {err}"
-                )
-    
+        await self.async_ensure_current_day()
+
         try:
             await self.weather_runtime.refresh()
         except Exception as err:  # pylint: disable=broad-except
@@ -749,16 +757,42 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
 
 
     async def async_update_data(self):
-        data = []
-
+        """Publish only complete snapshots; HA retains the last data on failure."""
         try:
-            data = await self.async_update_all_sensors()
+            return await self.async_update_all_sensors()
         except Exception as err:
-            _LOGGER.error(f"{self.controller_mac_address} - Error: {err}", exc_info=True)
+            raise UpdateFailed(f"Controller update failed: {err}") from err
 
-        # What is returned here is stored in self.data by the DataUpdateCoordinator
-        return data
+    def create_task(self, coroutine):
+        """Backward-compatible local alias for owned task creation."""
+        return self.async_create_task(coroutine)
 
+    def async_create_task(self, coroutine):
+        """Own short-lived entity, scheduler and tracker work for this entry."""
+        if self._closed:
+            coroutine.close()
+            raise HomeAssistantError("Controller is unloading")
+        task = self.hass.async_create_task(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+        return task
+
+    def _task_done(self, task):
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            _LOGGER.error("Controller background operation failed: %s", task.exception())
+
+    async def async_close(self):
+        """Release owned callbacks and drain work before closing the runner."""
+        self._closed = True
+        self.irrigation_scheduler.clear()
+        self.station_switch_tracker.clear()
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self.irrigation_runner.async_close()
 
     def calculate_forecasted_sprinkle_today(self, station_id: int) -> float:
         """Calculate the planned sprinkle amount for today for a station."""
@@ -827,7 +861,7 @@ class SmartWaterControllerCoordinator(DataUpdateCoordinator):
         """Get a device entity from our api data."""
         try:
             return [
-                devices for devices in self.data if devices["device_id"] == device_id
+                devices for devices in (self.data or []) if devices.get("device_id") == device_id
             ][0]
         except (TypeError, IndexError):
             # In this case if the device id does not exist you will get an IndexError.

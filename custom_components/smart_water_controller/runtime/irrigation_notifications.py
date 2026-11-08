@@ -106,7 +106,9 @@ class IrrigationNotifications:
         except asyncio.CancelledError:
             raise
         finally:
-            self._failure_task = None
+            # A cancelled predecessor must not erase its replacement's handle.
+            if self._failure_task is asyncio.current_task():
+                self._failure_task = None
 
     def mark_started(self, station: int) -> None:
         """Clear an old transient failure when a new attempt starts."""
@@ -118,9 +120,10 @@ class IrrigationNotifications:
 
     async def async_close(self) -> None:
         """Cancel timer tasks when HA unloads this integration."""
-        if self._failure_task is not None:
-            self._failure_task.cancel()
-            self._failure_task = None
+        task, self._failure_task = self._failure_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def _notify(self, event: str, station_name: str | None, source: str) -> None:
         settings = self.settings

@@ -60,7 +60,7 @@ class CustomServiceSetup(unittest.IsolatedAsyncioTestCase):
         result = await flow._async_handle_action_config_submit_services(action="stop_sprinkle", user_input={"params": PARAMS})
         self.assertEqual(result["type"], "create_entry")
         self.assertEqual(update.call_args.kwargs["data"][SERVICE_ACTIONS]["stop_sprinkle"]["params"], PARAMS)
-        reload.assert_awaited_once_with("custom")
+        reload.assert_not_awaited()
 
     async def test_both_solem_presets_still_require_mac_in_setup_and_options(self):
         for method in (IRRIGATION_CONTROL_METHOD_SOLEM_TOOLKIT, IRRIGATION_CONTROL_METHOD_SOLEM_BL_NR):
